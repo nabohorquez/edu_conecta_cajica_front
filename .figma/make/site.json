@@ -1,0 +1,10 @@
+{
+  "description": "Plataforma para que docentes de Cajicá desarrollen competencias digitales, realicen formación y consulten su progreso, mientras los equipos educativos gestionan usuarios y conectividad.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
