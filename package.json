@@ -1,7 +1,7 @@
 {
   "name": "figma-make-app",
   "version": "1.0.0",
-  "homepage": "https://nabohorquez.github.io/educonecta_cajica",
+  "homepage": "https://nabohorquez.github.io/edu_conecta_cajica_front/",
   "private": true,
   "type": "module",
   "scripts": {
