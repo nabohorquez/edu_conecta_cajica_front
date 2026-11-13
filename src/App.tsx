@@ -1,5 +1,7 @@
 import type { Chart as ChartInstance } from "chart.js";
+import type { JSX } from "react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { api, apiConfigured, getApiToken, roleFromApiUser, setApiToken, type ApiModule, type ApiProgress, type ApiRole, type ApiUser } from "@/api/client";
 
 type Role = "admin" | "trainer" | "teacher" | "technical";
 type IconName =
@@ -404,18 +406,38 @@ function Logo({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function Login({ onLogin }: { onLogin: (role: Role) => void }) {
+function Login({ onLogin }: { onLogin: (role: Role, user?: ApiUser) => void }) {
   const [role, setRole] = useState<Role>("admin");
   const [error, setError] = useState("");
   const [recover, setRecover] = useState(false);
   const [sent, setSent] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showDemoCredentials, setShowDemoCredentials] = useState(false);
-  const [email, setEmail] = useState(demoAccounts.admin.email);
-  const [password, setPassword] = useState(demoAccounts.admin.password);
-  const submit = (e: FormEvent) => {
+  const [busy, setBusy] = useState(false);
+  const [email, setEmail] = useState(apiConfigured ? "" : demoAccounts.admin.email);
+  const [password, setPassword] = useState(apiConfigured ? "" : demoAccounts.admin.password);
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!email || !password) return setError("Completa tu correo electrónico y contraseña.");
+    if (apiConfigured) {
+      setBusy(true);
+      setError("");
+      try {
+        const user = await api.login(email.trim(), password);
+        const apiRole = roleFromApiUser(user);
+        if (!apiRole) {
+          await api.logout();
+          setError("Tu cuenta no tiene un rol habilitado para ingresar a la plataforma.");
+          return;
+        }
+        onLogin(apiRole, user);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "No fue posible iniciar sesiÃ³n.");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     const matchedRole = (Object.keys(demoAccounts) as Role[]).find(
       (key) =>
         demoAccounts[key].email.toLowerCase() === email.trim().toLowerCase() &&
@@ -475,7 +497,15 @@ function Login({ onLogin }: { onLogin: (role: Role) => void }) {
             className="login-form"
             onSubmit={(e) => {
               e.preventDefault();
-              setSent(true);
+              if (!apiConfigured) {
+                setSent(true);
+                return;
+              }
+              setBusy(true);
+              api.requestPasswordReset(email.trim())
+                .then(() => setSent(true))
+                .catch((cause) => setError(cause instanceof Error ? cause.message : "No fue posible enviar el correo."))
+                .finally(() => setBusy(false));
             }}
           >
             <div className="mobile-logo">
@@ -494,6 +524,7 @@ function Login({ onLogin }: { onLogin: (role: Role) => void }) {
             <div className="focus-icon recover-icon">
               <Icon name={sent ? "check" : "lock"} size={34} />
             </div>
+            {error && <div className="form-message" role="alert">{error}</div>}
             {sent ? (
               <>
                 <div className="eyebrow">CORREO ENVIADO</div>
@@ -527,10 +558,11 @@ function Login({ onLogin }: { onLogin: (role: Role) => void }) {
                     required
                     type="email"
                     placeholder="nombre@institucion.edu.co"
-                    defaultValue="maria.ruiz@educonecta.gov.co"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
                   />
                 </label>
-                <button className="primary-btn full" type="submit">
+                <button className="primary-btn full" type="submit" disabled={busy}>
                   Enviar instrucciones <Icon name="arrow" size={17} />
                 </button>
               </>
@@ -589,16 +621,16 @@ function Login({ onLogin }: { onLogin: (role: Role) => void }) {
               </button>
             </div>
             {error && <div className="form-message">{error}</div>}
-            <button className="primary-btn full" type="submit">
-              Ingresar a la plataforma <Icon name="arrow" size={17} />
+            <button className="primary-btn full" type="submit" disabled={busy}>
+              {busy ? "Conectando..." : "Ingresar a la plataforma"} <Icon name="arrow" size={17} />
             </button>
-            <div className="demo-label">
+            {!apiConfigured && <div className="demo-label">
               <span></span>Accesos de demostración<span></span>
-            </div>
-            <p className="demo-intro">
+            </div>}
+            {!apiConfigured && <p className="demo-intro">
               ¿Quieres explorar la plataforma? Selecciona un perfil para probar sus funcionalidades.
-            </p>
-            <div className="role-options">
+            </p>}
+            {!apiConfigured && <div className="role-options">
               {(Object.keys(roleInfo) as Role[]).map((r) => (
                 <button
                   type="button"
@@ -634,8 +666,8 @@ function Login({ onLogin }: { onLogin: (role: Role) => void }) {
                   </i>
                 </button>
               ))}
-            </div>
-            <button
+            </div>}
+            {!apiConfigured && <button
               type="button"
               className="demo-credentials-toggle"
               onClick={() => setShowDemoCredentials(!showDemoCredentials)}
@@ -644,8 +676,8 @@ function Login({ onLogin }: { onLogin: (role: Role) => void }) {
                 ? "Ocultar credenciales de demostración"
                 : "Ver credenciales de demostración"}
               <Icon name="arrow" size={13} />
-            </button>
-            {showDemoCredentials && (
+            </button>}
+            {!apiConfigured && showDemoCredentials && (
               <div className="demo-credentials" role="status">
                 <div>
                   <span>Correo</span>
@@ -782,19 +814,36 @@ function Chart({ technical = false }: { technical?: boolean }) {
 function AdminDashboard({
   trainer = false,
   navigate,
+  user,
 }: {
   trainer?: boolean;
   navigate: (p: string) => void;
+  user?: ApiUser;
 }) {
+  const [dashboard, setDashboard] = useState<Record<string, unknown>>();
+  const [dashboardError, setDashboardError] = useState("");
+  useEffect(() => {
+    if (!apiConfigured) return;
+    api.dashboard(trainer ? "capacitador" : "administrador")
+      .then(setDashboard)
+      .catch((cause) => setDashboardError(cause instanceof Error ? cause.message : "No fue posible cargar el tablero."));
+  }, [trainer]);
+  const value = (key: string, fallback: string) => {
+    if (!apiConfigured) return fallback;
+    const raw = dashboard?.[key];
+    if (Array.isArray(raw)) return raw.length.toLocaleString("es-CO");
+    return typeof raw === "number" ? raw.toLocaleString("es-CO") : dashboard ? "0" : "—";
+  };
+  const greetingName = user?.first_name || user?.name?.split(" ")[0] || (trainer ? "Capacitador" : "Administrador");
   return (
     <div>
       <PageTitle
         eyebrow={trainer ? "PANEL DEL CAPACITADOR" : "RESUMEN GENERAL"}
-        title={trainer ? "Buenos días, Andrés" : "Buenos días, María Fernanda"}
+        title={`Buenos días, ${greetingName}`}
         subtitle={
           trainer
             ? "Acompaña el avance de tus docentes y prioriza los seguimientos."
-            : "Aquí tienes el panorama de EDUConecta hoy, 18 de junio de 2025."
+            : "Aquí tienes el panorama actualizado de EDUConecta."
         }
         action={
           <button className="secondary-btn">
@@ -802,36 +851,37 @@ function AdminDashboard({
           </button>
         }
       />
+      {dashboardError && <div className="form-message" role="alert">{dashboardError}</div>}
       <div className="stats-grid">
-        {!trainer && <Stat icon="users" value="1.312" label="Total de usuarios" />}
+        {!trainer && <Stat icon="users" value={value("usuarios_activos", "1.312")} label={apiConfigured ? "Usuarios activos" : "Total de usuarios"} />}
         <Stat
           icon="users"
-          value={trainer ? "84" : "1.248"}
-          label={trainer ? "Docentes asignados" : "Docentes registrados"}
-          note="+4,8% este mes"
+          value={value(trainer ? "docentes_sin_conexion_15_dias" : "docentes", trainer ? "84" : "1.248")}
+          label={trainer ? "Docentes sin conexión reciente" : "Docentes registrados"}
+          note={apiConfigured ? undefined : "+4,8% este mes"}
         />
         {!trainer && (
           <Stat icon="shield" value="64" label="Capacitadores registrados" tone="purple" />
         )}
         <Stat
           icon="activity"
-          value={trainer ? "67" : "1.086"}
-          label="Usuarios activos"
-          note="87% del total"
+          value={value("modulos_activos", trainer ? "67" : "1.086")}
+          label={trainer ? "Módulos activos" : "Módulos disponibles"}
+          note={apiConfigured ? undefined : "87% del total"}
           tone="green"
         />
-        {trainer && <Stat icon="book" value="14" label="Módulos en curso" tone="purple" />}
+        {trainer && <Stat icon="book" value={value("plazos_por_vencer", "14")} label="Plazos por vencer" tone="purple" />}
         {trainer && <Stat icon="award" value="4,3" label="Promedio de notas" tone="green" />}
         <Stat
           icon="book"
-          value={trainer ? "126" : "24"}
+          value={trainer ? value("plazos_por_vencer", "126") : value("modulos_activos", "24")}
           label={trainer ? "Módulos completados" : "Módulos disponibles"}
-          note={trainer ? "+18 este mes" : "3 nuevos este mes"}
+          note={apiConfigured ? undefined : trainer ? "+18 este mes" : "3 nuevos este mes"}
           tone="purple"
         />
         <Stat
           icon="clock"
-          value={trainer ? "17" : "42"}
+          value={trainer ? "—" : value("docentes_sin_conexion_30_dias", "42")}
           label={trainer ? "Requieren seguimiento" : "Sin ingreso reciente"}
           note="Últimos 15 días"
           tone="orange"
@@ -982,13 +1032,80 @@ function Avatar({ initials, color }: { initials: string; color?: string }) {
   );
 }
 
-function UsersPage({ openModal }: { openModal: () => void }) {
+function UsersPage({ openModal, roleOptions }: { openModal: () => void; roleOptions: ApiRole[] }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("Todos");
+  const [page, setPage] = useState(1);
+  const [totalUsers, setTotalUsers] = useState(apiConfigured ? 0 : users.length);
+  const [lastPage, setLastPage] = useState(1);
   const [userRows, setUserRows] = useState(() =>
-    users.map((user) => ({ ...user, roles: [user.role] })),
+    apiConfigured ? [] : users.map((user) => ({ ...user, roles: [user.role] })),
   );
+  const [loading, setLoading] = useState(apiConfigured);
+  const [apiError, setApiError] = useState("");
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [editingUser, setEditingUser] = useState<number | null>(null);
+  useEffect(() => {
+    const refresh = () => setRefreshVersion((version) => version + 1);
+    window.addEventListener("educonecta:users-changed", refresh);
+    return () => window.removeEventListener("educonecta:users-changed", refresh);
+  }, []);
+  useEffect(() => {
+    if (!apiConfigured) return;
+    let cancelled = false;
+    setLoading(true);
+    api.users({
+      buscar: query || undefined,
+      activo: status === "Todos" ? undefined : status === "Activo",
+      por_pagina: 100,
+      page,
+    })
+      .then(({ data, total, current_page, last_page }) => {
+        if (cancelled) return;
+        setTotalUsers(total ?? data.length);
+        setPage(current_page ?? page);
+        setLastPage(last_page ?? 1);
+        setUserRows(data.map((user) => {
+          const name = user.name || [user.first_name, user.last_name].filter(Boolean).join(" ") || user.email;
+          const roleNames = user.roles?.map((assignedRole) => assignedRole.rol_name) || [];
+          return {
+            id: String(user.id),
+            name,
+            initials: name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase(),
+            email: user.email,
+            school: "—",
+            role: roleNames[0] || "Sin rol",
+            roles: roleNames,
+            area: "—",
+            status: user.activo === false ? "Inactivo" : "Activo",
+            last: user.ultimo_acceso_en ? new Date(user.ultimo_acceso_en).toLocaleString("es-CO") : "Sin ingreso",
+          };
+        }));
+        setApiError("");
+      })
+      .catch((cause) => {
+        if (!cancelled) setApiError(cause instanceof Error ? cause.message : "No fue posible cargar usuarios.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [query, status, refreshVersion, page]);
+  useEffect(() => { setPage(1); }, [query, status]);
+  const toggleUserStatus = async (user: (typeof userRows)[number]) => {
+    const nextActive = user.status !== "Activo";
+    if (apiConfigured) {
+      try {
+        await api.setUserActive(Number(user.id), nextActive);
+      } catch (cause) {
+        setApiError(cause instanceof Error ? cause.message : "No fue posible actualizar el usuario.");
+        return;
+      }
+    }
+    setUserRows((rows) => rows.map((row) => row.id === user.id
+      ? { ...row, status: nextActive ? "Activo" : "Inactivo" }
+      : row));
+  };
   const filtered = useMemo(
     () =>
       userRows.filter(
@@ -1017,6 +1134,7 @@ function UsersPage({ openModal }: { openModal: () => void }) {
         <Stat icon="school" value="14" label="Instituciones" tone="purple" />
       </div>
       <section className="panel table-panel">
+        {apiError && <div className="form-message" role="alert">{apiError}</div>}
         <div className="table-tools">
           <div className="search">
             <Icon name="search" />
@@ -1050,6 +1168,8 @@ function UsersPage({ openModal }: { openModal: () => void }) {
               </tr>
             </thead>
             <tbody>
+              {loading && <tr><td colSpan={8}>Cargando usuarios...</td></tr>}
+              {!loading && filtered.length === 0 && <tr><td colSpan={8}>No se encontraron usuarios.</td></tr>}
               {filtered.map((u) => (
                 <tr key={u.name}>
                   <td>
@@ -1096,18 +1216,7 @@ function UsersPage({ openModal }: { openModal: () => void }) {
                       </button>
                       <button
                         title={u.status === "Activo" ? "Desactivar cuenta" : "Activar cuenta"}
-                        onClick={() =>
-                          setUserRows((rows) =>
-                            rows.map((row) =>
-                              row.id === u.id
-                                ? {
-                                    ...row,
-                                    status: row.status === "Activo" ? "Inactivo" : "Activo",
-                                  }
-                                : row,
-                            ),
-                          )
-                        }
+                        onClick={() => void toggleUserStatus(u)}
                       >
                         <Icon name={u.status === "Activo" ? "lock" : "check"} />
                       </button>
@@ -1119,13 +1228,11 @@ function UsersPage({ openModal }: { openModal: () => void }) {
           </table>
         </div>
         <div className="pagination">
-          <span>Mostrando 1–{filtered.length} de 1.312 usuarios</span>
+          <span>Mostrando {totalUsers === 0 ? 0 : (page - 1) * 100 + 1}–{Math.min(page * 100, totalUsers)} de {totalUsers.toLocaleString("es-CO")} usuarios</span>
           <div>
-            <button disabled>Anterior</button>
-            <button className="active">1</button>
-            <button>2</button>
-            <button>3</button>
-            <button>Siguiente</button>
+            <button disabled={page <= 1 || loading} onClick={() => setPage((current) => Math.max(1, current - 1))}>Anterior</button>
+            <span>{page} / {lastPage}</span>
+            <button disabled={page >= lastPage || loading} onClick={() => setPage((current) => Math.min(lastPage, current + 1))}>Siguiente</button>
           </div>
         </div>
       </section>
@@ -1133,8 +1240,24 @@ function UsersPage({ openModal }: { openModal: () => void }) {
         <div className="modal-backdrop">
           <form
             className="modal compact-modal"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
+              if (apiConfigured) {
+                const currentUser = userRows[editingUser];
+                const selectedRole = roleOptions.find((option) => currentUser.roles.includes(option.rol_name));
+                if (!selectedRole) {
+                  setApiError("Selecciona un rol para guardar los cambios.");
+                  return;
+                }
+                try {
+                  await api.updateUser(Number(currentUser.id), { rol_id: selectedRole.id });
+                  window.dispatchEvent(new Event("educonecta:users-changed"));
+                  setApiError("");
+                } catch (cause) {
+                  setApiError(cause instanceof Error ? cause.message : "No fue posible actualizar el rol.");
+                  return;
+                }
+              }
               setEditingUser(null);
             }}
           >
@@ -1159,13 +1282,13 @@ function UsersPage({ openModal }: { openModal: () => void }) {
                 Selecciona uno o varios roles. La asignación corresponde a la relación{" "}
                 <code>roles_x_usuario</code>.
               </p>
-              {(Object.keys(roleInfo) as Role[]).map((roleKey) => {
-                const label = roleInfo[roleKey].label;
+              {(apiConfigured ? roleOptions.map((option) => ({ key: option.rol_name, label: option.rol_name })) : (Object.keys(roleInfo) as Role[]).map((roleKey) => ({ key: roleKey, label: roleInfo[roleKey].label }))).map(({ key: roleKey, label }) => {
                 const checked = userRows[editingUser].roles.includes(label);
                 return (
                   <label className="role-check" key={roleKey}>
                     <input
-                      type="checkbox"
+                      type={apiConfigured ? "radio" : "checkbox"}
+                      name={apiConfigured ? "role_assignment" : undefined}
                       checked={checked}
                       onChange={() =>
                         setUserRows((rows) =>
@@ -1173,7 +1296,7 @@ function UsersPage({ openModal }: { openModal: () => void }) {
                             index === editingUser
                               ? {
                                   ...row,
-                                  roles: checked
+                                  roles: apiConfigured ? [label] : checked
                                     ? row.roles.filter((r) => r !== label)
                                     : [...row.roles, label],
                                 }
@@ -1219,6 +1342,128 @@ function UsersPage({ openModal }: { openModal: () => void }) {
 }
 
 function ContentManagementPage({ readOnly = false }: { readOnly?: boolean }) {
+  return apiConfigured ? <ApiContentManagementPage readOnly={readOnly} /> : <DemoContentManagementPage readOnly={readOnly} />;
+}
+
+function ApiContentManagementPage({ readOnly }: { readOnly: boolean }) {
+  type ContentTab = "modules" | "lessons" | "resources" | "activities" | "evaluations";
+  type ContentRow = Record<string, unknown> & { id: number; nombre?: string; titulo?: string; descripcion?: string; estado?: string; modulo_id?: number; tipo?: string; url?: string; nivel_id?: number; puntaje_minimo?: number; instrucciones?: string };
+  const [tab, setTab] = useState<ContentTab>("modules");
+  const [rows, setRows] = useState<ContentRow[]>([]);
+  const [moduleOptions, setModuleOptions] = useState<ApiModule[]>([]);
+  const [levelOptions, setLevelOptions] = useState<Array<{ id: number; nombre: string }>>([]);
+  const [editing, setEditing] = useState<ContentRow | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const labels: Record<ContentTab, string> = { modules: "módulo", lessons: "lección", resources: "recurso", activities: "actividad", evaluations: "evaluación" };
+  const load = async (currentTab = tab) => {
+    setLoading(true);
+    try {
+      const [list, moduleResult, levelResult] = await Promise.all([
+        currentTab === "modules" ? api.modules() : currentTab === "lessons" ? api.lessons() : currentTab === "resources" ? api.resources() : currentTab === "activities" ? api.activities() : api.evaluations(),
+        api.modules(),
+        api.levels(),
+      ]);
+      const listData = list as { data?: ContentRow[]; recursos?: ContentRow[] };
+      setRows(listData.data || listData.recursos || []);
+      setModuleOptions(moduleResult.data);
+      const levels = levelResult as { niveles?: Array<{ id: number; nombre: string }> };
+      setLevelOptions(levels.niveles || []);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : `No fue posible cargar ${labels[currentTab]}.`);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { void load(tab); }, [tab]);
+  const remove = async (row: ContentRow) => {
+    try {
+      if (tab === "modules") await api.deactivateModule(row.id);
+      else if (tab === "lessons") await api.deleteLesson(row.id);
+      else if (tab === "resources") await api.deleteResource(row.id);
+      else if (tab === "activities") await api.deleteActivity(row.id);
+      else await api.deleteEvaluation(row.id);
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No fue posible eliminar el registro.");
+    }
+  };
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const id = editing?.id;
+    const moduloId = Number(data.get("modulo_id")) || undefined;
+    const payload = {
+      nombre: String(data.get("nombre") || ""),
+      titulo: String(data.get("titulo") || ""),
+      descripcion: String(data.get("descripcion") || ""),
+      estado: String(data.get("estado") || "activo"),
+      modulo_id: moduloId,
+      nivel_id: Number(data.get("nivel_id")) || null,
+      orden: Number(data.get("orden")) || 0,
+      instrucciones: String(data.get("instrucciones") || ""),
+      puntaje_minimo: Number(data.get("puntaje_minimo")) || 60,
+      tipo: String(data.get("tipo") || "enlace"),
+      url: String(data.get("url") || ""),
+    };
+    setSaving(true);
+    try {
+      if (tab === "modules") {
+        const input = { nombre: payload.nombre, descripcion: payload.descripcion, nivel_id: payload.nivel_id, estado: payload.estado };
+        if (id) await api.updateModule(id, input); else await api.createModule(input);
+      } else if (tab === "lessons") {
+        const input = { modulo_id: moduloId, titulo: payload.titulo, descripcion: payload.descripcion, orden: payload.orden, estado: payload.estado };
+        if (id) await api.updateLesson(id, input); else await api.createLesson(input);
+      } else if (tab === "resources") {
+        const file = data.get("archivo");
+        if (id) {
+          await api.updateResource(id, { titulo: payload.titulo, descripcion: payload.descripcion, tipo: payload.tipo, url: payload.url || null, orden: payload.orden });
+        } else {
+          const multipart = new FormData();
+          multipart.set("modulo_id", String(moduloId)); multipart.set("titulo", payload.titulo); multipart.set("descripcion", payload.descripcion); multipart.set("tipo", payload.tipo); multipart.set("orden", String(payload.orden));
+          if (payload.url) multipart.set("url", payload.url);
+          if (file instanceof File && file.size) multipart.set("archivo", file);
+          await api.createResource(multipart);
+        }
+      } else if (tab === "activities") {
+        const input = { modulo_id: moduloId, titulo: payload.titulo, descripcion: payload.descripcion, instrucciones: payload.instrucciones, estado: payload.estado };
+        if (id) await api.updateActivity(id, input); else await api.createActivity(input);
+      } else {
+        const input = { modulo_id: moduloId, titulo: payload.titulo, descripcion: payload.descripcion, puntaje_minimo: payload.puntaje_minimo, estado: payload.estado };
+        if (id) await api.updateEvaluation(id, input); else await api.createEvaluation(input);
+      }
+      setModalOpen(false); setEditing(null); await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : `No fue posible guardar ${labels[tab]}.`);
+    } finally { setSaving(false); }
+  };
+  const openEditor = (row?: ContentRow) => { setEditing(row || null); setError(""); setModalOpen(true); };
+  const nameOf = (row: ContentRow) => String(row.nombre || row.titulo || `Registro ${row.id}`);
+  const relationOf = (row: ContentRow) => String((row.modulo as { nombre?: string } | undefined)?.nombre || "—");
+  return <div className={readOnly ? "readonly-content" : ""}>
+    <PageTitle eyebrow="CONTENIDO FORMATIVO" title="Gestión de módulos" subtitle="Administra módulos, lecciones, recursos, actividades y evaluaciones."
+      action={!readOnly && <button className="primary-btn" onClick={() => openEditor()}><Icon name="plus" /> Crear {labels[tab]}</button>} />
+    <div className="content-tabs" role="tablist">{(["modules", "lessons", "resources", "activities", "evaluations"] as ContentTab[]).map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item === "modules" ? "Módulos" : item === "lessons" ? "Lecciones" : item === "resources" ? "Recursos" : item === "activities" ? "Actividades" : "Evaluaciones"}</button>)}</div>
+    {error && <div className="form-message" role="alert">{error}</div>}
+    <section className="panel table-panel"><div className="table-scroll">{loading ? <p>Cargando {labels[tab]}s...</p> : rows.length === 0 ? <p>No hay registros disponibles.</p> : <table><thead><tr><th>Nombre</th><th>Módulo</th><th>Descripción</th><th>Estado</th><th></th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><b>{nameOf(row)}</b></td><td>{tab === "modules" ? (row.nivel as { nombre?: string } | undefined)?.nombre || "—" : relationOf(row)}</td><td>{row.descripcion || "—"}</td><td><span className={`status ${row.estado === "inactivo" ? "muted-status" : "success"}`}>{row.estado || "Activo"}</span></td><td className="actions">{!readOnly && <><button title="Editar" onClick={() => openEditor(row)}><Icon name="edit" /></button><button title="Desactivar o eliminar" onClick={() => void remove(row)}><Icon name="close" /></button></>}</td></tr>)}</tbody></table>}</div></section>
+    {modalOpen && <div className="modal-backdrop"><form className="modal" onSubmit={save}><header><div><span className="eyebrow">CONTENIDO FORMATIVO</span><h2>{editing ? "Editar" : "Crear"} {labels[tab]}</h2></div><button type="button" className="icon-btn" onClick={() => setModalOpen(false)}><Icon name="close" /></button></header>
+      <div className="form-grid">{tab === "modules" ? <><label>Nombre<input name="nombre" required defaultValue={editing?.nombre} /></label><label>Nivel<select name="nivel_id" defaultValue={editing?.nivel_id || ""}><option value="">Sin nivel</option>{levelOptions.map((level) => <option key={level.id} value={level.id}>{level.nombre}</option>)}</select></label></> : <><label className="wide">Módulo<select name="modulo_id" required defaultValue={editing?.modulo_id || ""}><option value="">Selecciona un módulo</option>{moduleOptions.map((module) => <option key={module.id} value={module.id}>{module.nombre}</option>)}</select></label><label className="wide">Título<input name="titulo" required defaultValue={editing?.titulo} /></label></>}
+      <label className="wide">Descripción<textarea name="descripcion" rows={3} defaultValue={editing?.descripcion || ""} /></label>
+      {(tab === "lessons" || tab === "resources") && <label>Orden<input name="orden" type="number" min="0" defaultValue={editing?.orden as number || 0} /></label>}
+      {tab === "resources" && <><label>Tipo<select name="tipo" defaultValue={editing?.tipo || "enlace"}><option value="enlace">Enlace</option><option value="video">Video</option><option value="archivo">Archivo</option></select></label><label className="wide">URL<input name="url" type="url" defaultValue={editing?.url || ""} /></label>{!editing && <label className="wide">Archivo<input name="archivo" type="file" /></label>}</>}
+      {tab === "activities" && <label className="wide">Instrucciones<textarea name="instrucciones" rows={3} defaultValue={editing?.instrucciones || ""} /></label>}
+      {tab === "evaluations" && <label>Puntaje mínimo<input name="puntaje_minimo" type="number" min="0" max="100" defaultValue={editing?.puntaje_minimo ?? 60} /></label>}
+      {tab !== "resources" && <label>Estado<select name="estado" defaultValue={editing?.estado || "activo"}><option value="activo">Activo</option><option value="inactivo">Inactivo</option></select></label>}</div>
+      <footer><button type="button" className="secondary-btn" onClick={() => setModalOpen(false)}>Cancelar</button><button className="primary-btn" disabled={saving}>{saving ? "Guardando..." : "Guardar"}</button></footer>
+    </form></div>}
+  </div>;
+}
+
+function DemoContentManagementPage({ readOnly = false }: { readOnly?: boolean }) {
   const [tab, setTab] = useState<
     "modules" | "lessons" | "resources" | "activities" | "evaluations"
   >("modules");
@@ -1560,8 +1805,43 @@ function RowActions() {
   );
 }
 
-function ModulesPage({ role, navigate }: { role: Role; navigate: (p: string) => void }) {
+function ModulesPage({ role, navigate, onSelectModule }: { role: Role; navigate: (p: string) => void; onSelectModule: (moduleId?: number) => void }) {
+  const [remoteModules, setRemoteModules] = useState<ApiModule[]>([]);
+  const [remoteProgress, setRemoteProgress] = useState<ApiProgress[]>([]);
+  const [loading, setLoading] = useState(apiConfigured && role === "teacher");
+  const [apiError, setApiError] = useState("");
+  useEffect(() => {
+    if (!apiConfigured || role !== "teacher") return;
+    let cancelled = false;
+    Promise.all([api.modules(), api.myProgressSummary()])
+      .then(([moduleResult, progressResult]) => {
+        if (cancelled) return;
+        setRemoteModules(moduleResult.data);
+        setRemoteProgress(progressResult.progreso);
+      })
+      .catch((cause) => {
+        if (!cancelled) setApiError(cause instanceof Error ? cause.message : "No fue posible cargar los mÃ³dulos.");
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [role]);
   if (role !== "teacher") return <ContentManagementPage readOnly={role === "trainer"} />;
+  const moduleCards: Array<{ id?: number; title: string; category: string; level: string; progress: number; lessons: number; time: string; color: string }> = apiConfigured
+    ? remoteModules.map((module, index) => {
+        const progress = remoteProgress.find((item) => item.modulo_id === module.id);
+        const color = ["#2563A6", "#20A58A", "#7C5CFC"][index % 3];
+        return {
+          id: module.id,
+          title: module.nombre,
+          category: module.nivel?.nombre || "FormaciÃ³n docente",
+          level: module.nivel?.nombre || "General",
+          progress: progress?.porcentaje || 0,
+          lessons: progress?.total_lecciones ?? module.lecciones?.length ?? 0,
+          time: "",
+          color,
+        };
+      })
+    : modules;
   return (
     <div>
       <PageTitle
@@ -1580,9 +1860,12 @@ function ModulesPage({ role, navigate }: { role: Role; navigate: (p: string) => 
           ) : undefined
         }
       />
+      {apiError && <div className="form-message" role="alert">{apiError}</div>}
       <div className="module-grid">
-        {modules.map((m, i) => (
-          <article className="module-card" key={m.title}>
+        {loading && <div className="panel">Cargando mÃ³dulos...</div>}
+        {!loading && moduleCards.length === 0 && <div className="panel">No tienes mÃ³dulos disponibles.</div>}
+        {moduleCards.map((m, i) => (
+          <article className="module-card" key={m.id ?? m.title}>
             <div
               className="module-cover"
               style={{ background: `linear-gradient(135deg, ${m.color}, ${m.color}bb)` }}
@@ -1614,7 +1897,7 @@ function ModulesPage({ role, navigate }: { role: Role; navigate: (p: string) => 
               <Progress value={m.progress} color={m.color} />
               <button
                 className={m.progress ? "primary-btn full" : "secondary-btn full"}
-                onClick={() => navigate("learning")}
+                onClick={() => { onSelectModule(m.id); navigate("learning"); }}
               >
                 {m.progress ? "Continuar módulo" : "Comenzar módulo"}{" "}
                 <Icon name="arrow" size={16} />
@@ -1627,32 +1910,51 @@ function ModulesPage({ role, navigate }: { role: Role; navigate: (p: string) => 
   );
 }
 
-function TeacherDashboard({ navigate }: { navigate: (p: string) => void }) {
+function TeacherDashboard({ navigate, user }: { navigate: (p: string) => void; user?: ApiUser }) {
+  const [dashboard, setDashboard] = useState<{ progreso?: ApiProgress[]; proximos_plazos?: Array<{ id: number; fecha_fin: string; modulo?: { nombre?: string } }> }>();
+  const [dashboardError, setDashboardError] = useState("");
+  useEffect(() => {
+    if (!apiConfigured) return;
+    api.dashboard("docente")
+      .then((result) => setDashboard(result as typeof dashboard))
+      .catch((cause) => setDashboardError(cause instanceof Error ? cause.message : "No fue posible cargar tu resumen."));
+  }, []);
+  const progressRows = dashboard?.progreso || [];
+  const averageProgress = progressRows.length
+    ? Math.round(progressRows.reduce((sum, item) => sum + item.porcentaje, 0) / progressRows.length)
+    : 0;
+  const inProgressCount = progressRows.filter((item) => item.porcentaje > 0 && item.porcentaje < 100).length;
+  const completedCount = progressRows.filter((item) => item.porcentaje === 100).length;
+  const grades = progressRows.map((item) => item.nota_evaluacion).filter((grade): grade is number => grade !== null);
+  const averageGrade = grades.length ? (grades.reduce((sum, grade) => sum + grade, 0) / grades.length).toLocaleString("es-CO", { maximumFractionDigits: 1 }) : "—";
+  const currentModule = progressRows.find((item) => item.porcentaje > 0) || progressRows[0];
+  const greetingName = user?.first_name || user?.name?.split(" ")[0] || "docente";
   return (
     <div>
       <div className="teacher-hero">
         <div>
           <span className="eyebrow light">MI RUTA DE APRENDIZAJE</span>
-          <h1>¡Hola, Laura! Qué bueno verte.</h1>
+          <h1>¡Hola, {greetingName}! Qué bueno verte.</h1>
           <p>Estás cada vez más cerca de tu meta. Continúa donde quedaste.</p>
           <button onClick={() => navigate("learning")}>
             Continuar formación <Icon name="arrow" />
           </button>
         </div>
         <div className="hero-progress">
-          <div className="donut light-donut" style={{ "--percent": "64%" } as React.CSSProperties}>
+          <div className="donut light-donut" style={{ "--percent": `${apiConfigured ? averageProgress : 64}%` } as React.CSSProperties}>
             <div>
-              <strong>64%</strong>
+              <strong>{apiConfigured ? averageProgress : 64}%</strong>
               <span>avance general</span>
             </div>
           </div>
         </div>
       </div>
       <div className="stats-grid teacher-stats">
-        <Stat icon="book" value="3" label="Módulos en curso" />
-        <Stat icon="check" value="5" label="Completados" tone="green" />
-        <Stat icon="clock" value="4" label="Actividades pendientes" tone="orange" />
-        <Stat icon="award" value="4,6" label="Promedio de notas" tone="purple" />
+        {dashboardError && <div className="form-message" role="alert">{dashboardError}</div>}
+        <Stat icon="book" value={apiConfigured ? String(inProgressCount) : "3"} label="Módulos en curso" />
+        <Stat icon="check" value={apiConfigured ? String(completedCount) : "5"} label="Completados" tone="green" />
+        <Stat icon="clock" value={apiConfigured ? "—" : "4"} label="Actividades pendientes" tone="orange" />
+        <Stat icon="award" value={apiConfigured ? averageGrade : "4,6"} label="Promedio de notas" tone="purple" />
       </div>
       <div className="dashboard-grid">
         <section className="panel span-2 current-course">
@@ -1662,10 +1964,10 @@ function TeacherDashboard({ navigate }: { navigate: (p: string) => void }) {
               <Icon name="shield" size={34} />
             </div>
             <div className="grow">
-              <span className="category">CIUDADANÍA DIGITAL · BÁSICO</span>
-              <h3>Ciudadanía digital responsable</h3>
-              <p>Lección 5 de 6 · Protección de datos personales</p>
-              <Progress value={78} />
+              <span className="category">{currentModule?.nivel || "MI FORMACIÓN"}</span>
+              <h3>{apiConfigured ? currentModule?.modulo || "Aún no tienes módulos asignados" : "Ciudadanía digital responsable"}</h3>
+              <p>{apiConfigured ? `${currentModule?.lecciones_completadas || 0} de ${currentModule?.total_lecciones || 0} lecciones completadas` : "Lección 5 de 6 · Protección de datos personales"}</p>
+              <Progress value={apiConfigured ? currentModule?.porcentaje || 0 : 78} />
             </div>
             <button className="primary-btn" onClick={() => navigate("learning")}>
               <Icon name="play" /> Continuar
@@ -1702,7 +2004,9 @@ function TeacherDashboard({ navigate }: { navigate: (p: string) => void }) {
         subtitle="Basado en tu diagnóstico y progreso actual."
       />
       <div className="recommendations">
-        {modules.slice(1).map((m) => (
+        {(apiConfigured
+          ? progressRows.filter((item) => item !== currentModule).map((item, index) => ({ title: item.modulo, level: item.nivel || "Formación", lessons: item.total_lecciones, time: `${item.porcentaje}%`, color: ["#2563A6", "#20A58A", "#7C5CFC"][index % 3] }))
+          : modules.slice(1)).map((m) => (
           <div className="recommend-card" key={m.title}>
             <div style={{ background: m.color }}>
               <Icon name="book" size={28} />
@@ -1724,7 +2028,68 @@ function TeacherDashboard({ navigate }: { navigate: (p: string) => void }) {
   );
 }
 
-function LearningPage() {
+function LearningPage({ moduleId, onSelectModule, navigate }: { moduleId: number | null; onSelectModule: (moduleId?: number) => void; navigate: (page: string) => void }) {
+  return apiConfigured ? <ApiLearningPage moduleId={moduleId} onSelectModule={onSelectModule} navigate={navigate} /> : <DemoLearningPage />;
+}
+
+function ApiLearningPage({ moduleId, onSelectModule, navigate }: { moduleId: number | null; onSelectModule: (moduleId?: number) => void; navigate: (page: string) => void }) {
+  type Lesson = { id: number; titulo: string; descripcion?: string; orden?: number; recursos?: Array<{ id: number; titulo: string; tipo: string; url?: string | null; ruta_archivo?: string | null }> };
+  const [moduleOptions, setModuleOptions] = useState<ApiModule[]>([]);
+  const [selectedModule, setSelectedModule] = useState<ApiModule | null>(null);
+  const [lessons, setLessons] = useState<Lesson[]>([]);
+  const [activeLesson, setActiveLesson] = useState<Lesson | null>(null);
+  const [completedLessonIds, setCompletedLessonIds] = useState<number[]>([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setSelectedModule(null);
+    setActiveLesson(null);
+    Promise.all([api.modules(), api.myProgress()]).then(([moduleResult, progressResult]) => {
+      if (cancelled) return;
+      setModuleOptions(moduleResult.data);
+      const saved = progressResult.progreso.find((item) => item.modulo_id === moduleId);
+      setCompletedLessonIds((saved?.lecciones || []).filter((lesson) => lesson.estado === "completada").map((lesson) => lesson.id));
+      if (moduleId) {
+        api.module(moduleId).then((response) => {
+          if (cancelled) return;
+          const loaded = response.modulo;
+          setSelectedModule(loaded);
+          setLessons((loaded.lecciones || []) as Lesson[]);
+        }).catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : "No fue posible cargar el módulo."); });
+      }
+    }).catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : "No fue posible cargar el contenido."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [moduleId]);
+  const openLesson = async (lesson: Lesson) => {
+    try {
+      const response = await api.lesson(lesson.id) as { leccion: Lesson };
+      setActiveLesson(response.leccion);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible cargar la lección."); }
+  };
+  const completeLesson = async () => {
+    if (!activeLesson) return;
+    try {
+      await api.saveLessonProgress(activeLesson.id, { porcentaje: 100, estado: "completada" });
+      setCompletedLessonIds((ids) => ids.includes(activeLesson.id) ? ids : [...ids, activeLesson.id]);
+      setError("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible guardar el progreso."); }
+  };
+  const download = async (resource: NonNullable<Lesson["recursos"]>[number]) => {
+    try {
+      if (resource.url) window.open(resource.url, "_blank", "noopener,noreferrer");
+      else await api.downloadResource(resource.id, resource.titulo);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible abrir el recurso."); }
+  };
+  if (loading) return <section className="panel">Cargando contenido...</section>;
+  if (!selectedModule) return <div><PageTitle eyebrow="MI FORMACIÓN" title="Elige un módulo" subtitle="Selecciona un módulo para consultar sus lecciones y recursos." />{error && <div className="form-message" role="alert">{error}</div>}<div className="module-grid">{moduleOptions.map((module) => <article className="module-card" key={module.id}><div className="module-body"><span className="category">{module.nivel?.nombre || "Formación"}</span><h3>{module.nombre}</h3><p>{module.descripcion}</p><button className="primary-btn full" onClick={() => onSelectModule(module.id)}>Abrir módulo <Icon name="arrow" /></button></div></article>)}</div></div>;
+  const completion = lessons.length ? Math.round(completedLessonIds.length / lessons.length * 100) : 0;
+  return <div className="learning-layout"><aside className="lesson-nav"><button className="back" onClick={() => { setActiveLesson(null); onSelectModule(undefined); }}><Icon name="arrow" /> Volver a mis módulos</button><span className="category">MÓDULO EN CURSO</span><h2>{selectedModule.nombre}</h2><div className="progress-label"><span>Progreso</span><b>{completion}%</b></div><Progress value={completion} /><div className="lesson-list">{lessons.map((lesson, index) => <button key={lesson.id} className={activeLesson?.id === lesson.id ? "active" : ""} onClick={() => void openLesson(lesson)}><i className={completedLessonIds.includes(lesson.id) ? "done" : "current"}>{completedLessonIds.includes(lesson.id) ? <Icon name="check" size={14} /> : index + 1}</i><span><small>LECCIÓN {index + 1}</small>{lesson.titulo}</span></button>)}</div>{completion === 100 && <button className="primary-btn full" onClick={() => navigate("evaluations")}>Presentar evaluación</button>}</aside><article className="lesson-content">{error && <div className="form-message" role="alert">{error}</div>}{activeLesson ? <><div className="lesson-top"><span className="category">LECCIÓN</span></div><h1>{activeLesson.titulo}</h1><p className="lead">{activeLesson.descripcion || "Contenido de formación del módulo."}</p><section className="panel"><PanelHead title="Recursos de la lección" />{activeLesson.recursos?.length ? activeLesson.recursos.map((resource) => <div className="setting-row" key={resource.id}><div><b>{resource.titulo}</b><span>{resource.tipo}</span></div><button className="secondary-btn" onClick={() => void download(resource)}><Icon name="download" /> Abrir recurso</button></div>) : <p>No hay recursos adjuntos a esta lección.</p>}</section><footer className="question-actions"><button className="primary-btn" disabled={completedLessonIds.includes(activeLesson.id)} onClick={() => void completeLesson()}>{completedLessonIds.includes(activeLesson.id) ? "Lección completada" : "Marcar como completada"} <Icon name="check" /></button></footer></> : <><span className="eyebrow">CONTENIDO DEL MÓDULO</span><h1>Selecciona una lección</h1><p className="lead">El progreso se guarda en tu cuenta cuando marcas una lección como completada.</p></>}</article></div>;
+}
+
+function DemoLearningPage() {
   const [lesson, setLesson] = useState(4);
   const lessonNames = [
     "Bienvenida al módulo",
@@ -1829,7 +2194,117 @@ function LearningPage() {
   );
 }
 
+function ApiLearningCatalogPage({ kind }: { kind: "lessons" | "resources" }) {
+  type Row = { id: number; titulo: string; descripcion?: string; tipo?: string; url?: string | null; modulo?: { nombre?: string }; leccion?: { titulo?: string } };
+  const [rows, setRows] = useState<Row[]>([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    const request = kind === "lessons" ? api.lessons() : api.resources();
+    request.then((response) => {
+      const data = response as { data?: Row[]; recursos?: Row[] };
+      if (!cancelled) setRows(data.data || data.recursos || []);
+    }).catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : "No fue posible cargar el contenido."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [kind]);
+  const openResource = async (resource: Row) => {
+    try {
+      if (resource.url) window.open(resource.url, "_blank", "noopener,noreferrer");
+      else await api.downloadResource(resource.id, resource.titulo);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible abrir el recurso."); }
+  };
+  return <div><PageTitle eyebrow="MI FORMACIÓN" title={kind === "lessons" ? "Mis lecciones" : "Mis recursos"} subtitle={kind === "lessons" ? "Consulta las lecciones disponibles en tus módulos." : "Abre o descarga los materiales de formación."} />
+    {error && <div className="form-message" role="alert">{error}</div>}
+    <section className="panel table-panel"><div className="table-scroll"><table><thead><tr><th>Título</th><th>Módulo</th><th>{kind === "resources" ? "Tipo" : "Descripción"}</th><th></th></tr></thead><tbody>{loading && <tr><td colSpan={4}>Cargando...</td></tr>}{!loading && rows.length === 0 && <tr><td colSpan={4}>No hay registros disponibles.</td></tr>}{rows.map((row) => <tr key={row.id}><td><b>{row.titulo}</b></td><td>{row.modulo?.nombre || row.leccion?.titulo || "—"}</td><td>{kind === "resources" ? row.tipo || "—" : row.descripcion || "—"}</td><td>{kind === "resources" && <button className="secondary-btn" onClick={() => void openResource(row)}><Icon name="download" /> Abrir</button>}</td></tr>)}</tbody></table></div></section>
+  </div>;
+}
+
 function DiagnosticPage() {
+  return apiConfigured ? <ApiDiagnosticPage /> : <DemoDiagnosticPage />;
+}
+
+function ApiDiagnosticPage() {
+  type Question = { id: number; enunciado: string; obligatoria?: boolean; opciones: Array<{ id: number; texto: string }> };
+  const [diagnostic, setDiagnostic] = useState<{ id: number; titulo: string; descripcion?: string; preguntas?: Question[] }>();
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [attemptId, setAttemptId] = useState<number | null>(null);
+  const [answers, setAnswers] = useState<Record<number, number>>({});
+  const [result, setResult] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api.latestDiagnosticAttempt() as Promise<{ intento?: { id: number; estado: string; puntaje?: number } | null }>, api.availableDiagnostic() as Promise<{ diagnostico?: { id: number; titulo: string; descripcion?: string } | null }>])
+      .then(([latest, available]) => {
+        if (cancelled) return;
+        if (latest.intento?.estado === "completado") {
+          setResult(latest.intento.puntaje ?? 0);
+          return;
+        }
+        if (!available.diagnostico) return;
+        setDiagnostic(available.diagnostico);
+        const savedAttempt = latest.intento?.estado === "en_progreso" ? latest.intento.id : null;
+        const savedAnswers = savedAttempt ? sessionStorage.getItem(`diagnostic-${savedAttempt}-answers`) : null;
+        if (savedAttempt) setAttemptId(savedAttempt);
+        if (savedAnswers) setAnswers(JSON.parse(savedAnswers) as Record<number, number>);
+        if (savedAttempt) {
+          api.diagnostic(available.diagnostico.id).then((data) => {
+            if (!cancelled) setQuestions((data as { diagnostico: { preguntas: Question[] } }).diagnostico.preguntas || []);
+          }).catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : "No fue posible reanudar el diagnóstico."); });
+        }
+      })
+      .catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : "No fue posible cargar el diagnóstico."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+  const start = async () => {
+    if (!diagnostic) return;
+    try {
+      const response = await api.startDiagnostic(diagnostic.id) as { intento: { id: number }; preguntas: Question[] };
+      setAttemptId(response.intento.id);
+      setQuestions(response.preguntas);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No fue posible iniciar el diagnóstico.");
+    }
+  };
+  const choose = (questionId: number, optionId: number) => {
+    setAnswers((current) => {
+      const updated = { ...current, [questionId]: optionId };
+      if (attemptId !== null) sessionStorage.setItem(`diagnostic-${attemptId}-answers`, JSON.stringify(updated));
+      return updated;
+    });
+  };
+  const finish = async () => {
+    if (attemptId === null) return;
+    try {
+      const respuestas = Object.entries(answers).map(([preguntaId, opcionId]) => ({ pregunta_id: Number(preguntaId), opcion_id: opcionId }));
+      await api.saveDiagnosticAnswers(attemptId, respuestas);
+      const response = await api.finishDiagnostic(attemptId) as { intento: { puntaje?: number } };
+      setResult(response.intento.puntaje ?? 0);
+      sessionStorage.removeItem(`diagnostic-${attemptId}-answers`);
+      setAttemptId(null);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No fue posible finalizar el diagnóstico.");
+    }
+  };
+  if (loading) return <section className="panel">Cargando diagnóstico...</section>;
+  if (error && !diagnostic) return <div className="focus-page"><div className="form-message" role="alert">{error}</div></div>;
+  if (result !== null) return <div className="focus-page"><div className="focus-icon"><Icon name="award" size={42} /></div><span className="eyebrow">DIAGNÓSTICO COMPLETADO</span><h1>Tus resultados</h1><div className="result-number">{result}<small> / 100</small></div><p>Tu resultado se guardó en tu historial de formación.</p></div>;
+  if (attemptId !== null) return <div className="question-page">
+    <div className="question-progress"><div><span>{questions.length} preguntas</span><b>{questions.length ? Math.round(Object.keys(answers).length / questions.length * 100) : 0}% completado</b></div><Progress value={questions.length ? Object.keys(answers).length / questions.length * 100 : 0} /></div>
+    {error && <div className="form-message" role="alert">{error}</div>}
+    {questions.map((question, index) => <section className="question-card" key={question.id}><span className="category">PREGUNTA {index + 1} DE {questions.length}</span><h1>{question.enunciado}</h1><div className="answers">{question.opciones.map((option, optionIndex) => <button type="button" className={answers[question.id] === option.id ? "selected" : ""} key={option.id} onClick={() => choose(question.id, option.id)}><i>{String.fromCharCode(65 + optionIndex)}</i>{option.texto}</button>)}</div></section>)}
+    <button className="primary-btn" disabled={questions.filter((question) => question.obligatoria !== false).some((question) => !answers[question.id])} onClick={() => void finish()}>Guardar y finalizar</button>
+  </div>;
+  if (!diagnostic) return <div className="focus-page"><span className="eyebrow">DIAGNÓSTICO INICIAL</span><h1>No hay un diagnóstico disponible</h1><p>El administrador aún no ha publicado el diagnóstico inicial.</p></div>;
+  return <div className="focus-page"><div className="focus-icon"><Icon name="award" size={42} /></div><span className="eyebrow">DIAGNÓSTICO INICIAL</span><h1>{diagnostic.titulo}</h1><p>{diagnostic.descripcion || "Responde las preguntas para identificar tu nivel inicial de competencias digitales."}</p>{error && <div className="form-message" role="alert">{error}</div>}<button className="primary-btn" onClick={() => void start()}>Comenzar diagnóstico <Icon name="arrow" /></button></div>;
+}
+
+function DemoDiagnosticPage() {
   const [stage, setStage] = useState<"intro" | "questions" | "results">("intro");
   const [question, setQuestion] = useState(0);
   const [answer, setAnswer] = useState<number | null>(null);
@@ -1962,6 +2437,45 @@ function DiagnosticPage() {
 
 function ConnectivityPage({ admin = false }: { admin?: boolean }) {
   const [measured, setMeasured] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [measurement, setMeasurement] = useState<{ velocidad_bajada?: number; latencia_ms?: number; tipo_conexion?: string; estado?: string }>();
+  const [connectivityError, setConnectivityError] = useState("");
+  const [connectivityRows, setConnectivityRows] = useState<Array<{ id: number; estado: string; velocidad_bajada?: number; latencia_ms?: number; tipo_conexion?: string; medido_en?: string; usuario?: { name?: string } }>>([]);
+  useEffect(() => {
+    if (!apiConfigured || !admin) return;
+    api.connectivityReport().then((response) => setConnectivityRows((response as { data: typeof connectivityRows }).data || []))
+      .catch((cause) => setConnectivityError(cause instanceof Error ? cause.message : "No fue posible cargar el informe de conectividad."));
+  }, [admin]);
+  useEffect(() => {
+    if (!apiConfigured || admin) return;
+    api.latestConnectivity().then((response) => {
+      const latest = (response as { medicion?: typeof measurement }).medicion;
+      if (latest) { setMeasurement(latest); setMeasured(true); }
+    }).catch(() => undefined);
+  }, [admin]);
+  const runConnectivityCheck = async () => {
+    if (!apiConfigured) { setMeasured(true); return; }
+    setChecking(true);
+    setConnectivityError("");
+    const startedAt = performance.now();
+    try {
+      await api.health();
+      const latency = Math.max(0, Math.round(performance.now() - startedAt));
+      const connection = (navigator as Navigator & { connection?: { effectiveType?: string; downlink?: number } }).connection;
+      const speed = connection?.downlink || 0;
+      const estado = latency < 150 && (!speed || speed >= 5) ? "buena" : latency < 500 && (!speed || speed >= 1) ? "limitada" : "sin_conexion";
+      const result = { velocidad_bajada: speed, latencia_ms: latency, tipo_conexion: connection?.effectiveType || "desconocida", estado };
+      await api.recordConnectivity(result);
+      setMeasurement(result);
+      setMeasured(true);
+    } catch (cause) {
+      setConnectivityError(cause instanceof Error ? cause.message : "No fue posible medir la conectividad.");
+    } finally {
+      setChecking(false);
+    }
+  };
+  const connectivityStatus = measurement?.estado === "buena" ? "buena" : measurement?.estado === "limitada" ? "limitada" : measurement?.estado === "sin_conexion" ? "deficiente" : "";
+  const connectivityPercent = (state: string) => connectivityRows.length ? `${Math.round(connectivityRows.filter((row) => row.estado === state).length / connectivityRows.length * 100)}%` : "0%";
   return (
     <div>
       <PageTitle
@@ -1973,11 +2487,12 @@ function ConnectivityPage({ admin = false }: { admin?: boolean }) {
             : "Analizamos tu conexión para ofrecerte la mejor experiencia de aprendizaje."
         }
         action={
-          <button className="primary-btn" onClick={() => setMeasured(true)}>
-            <Icon name="activity" /> Realizar nueva prueba
+          <button className="primary-btn" disabled={checking} onClick={() => void runConnectivityCheck()}>
+            <Icon name="activity" /> {checking ? "Midiendo..." : "Realizar nueva prueba"}
           </button>
         }
       />
+      {connectivityError && <div className="form-message" role="alert">{connectivityError}</div>}
       {!admin && (
         <div className={`connection-banner ${measured ? "good" : "pending"}`}>
           <div>
@@ -1986,7 +2501,7 @@ function ConnectivityPage({ admin = false }: { admin?: boolean }) {
           <section>
             <span>ESTADO DE TU CONEXIÓN</span>
             <h2>
-              {measured ? "Medición completada: conexión buena" : "Aún no hay una medición activa"}
+              {measured ? `Medición completada: conexión ${connectivityStatus || "registrada"}` : "Aún no hay una medición activa"}
             </h2>
             <p>
               {measured
@@ -2004,24 +2519,24 @@ function ConnectivityPage({ admin = false }: { admin?: boolean }) {
       <div className="stats-grid connection-stats">
         <Stat
           icon="download"
-          value={admin ? "68%" : measured ? "42,8" : "—"}
+          value={admin ? apiConfigured ? connectivityPercent("buena") : "68%" : apiConfigured ? measurement?.velocidad_bajada != null ? String(measurement.velocidad_bajada) : "—" : measured ? "42,8" : "—"}
           label={admin ? "Conexiones buenas" : "Descarga · Mbps"}
           tone="green"
         />
         <Stat
           icon="activity"
-          value={admin ? "24%" : measured ? "28" : "—"}
+          value={admin ? apiConfigured ? connectivityPercent("limitada") : "24%" : apiConfigured ? measurement?.latencia_ms != null ? String(measurement.latencia_ms) : "—" : measured ? "28" : "—"}
           label={admin ? "Conexiones regulares" : "Latencia · ms"}
         />
         <Stat
           icon="chart"
-          value={admin ? "8%" : measured ? "4,2" : "—"}
+          value={admin ? apiConfigured ? connectivityPercent("sin_conexion") : "8%" : apiConfigured ? "—" : measured ? "4,2" : "—"}
           label={admin ? "Conexiones deficientes" : "Jitter · ms"}
           tone="orange"
         />
         <Stat
           icon="wifi"
-          value={admin ? "1.183" : measured ? "Wi-Fi" : "Sin medir"}
+          value={admin ? apiConfigured ? String(connectivityRows.length) : "1.183" : apiConfigured ? measurement?.tipo_conexion || "Sin medir" : measured ? "Wi-Fi" : "Sin medir"}
           label={admin ? "Pruebas este mes" : "Tipo de conexión"}
           tone="purple"
         />
@@ -2032,7 +2547,9 @@ function ConnectivityPage({ admin = false }: { admin?: boolean }) {
             title={admin ? "Calidad de conexión por institución" : "Historial de mediciones"}
             subtitle="Resultados de los últimos 30 días"
           />
-          {admin ? (
+          {admin ? apiConfigured ? (
+            <div className="table-scroll"><table><thead><tr><th>Docente</th><th>Fecha</th><th>Descarga</th><th>Latencia</th><th>Tipo</th><th>Estado</th></tr></thead><tbody>{connectivityRows.map((row) => <tr key={row.id}><td>{row.usuario?.name || "—"}</td><td>{row.medido_en ? new Date(row.medido_en).toLocaleString("es-CO") : "—"}</td><td>{row.velocidad_bajada ?? "—"} Mbps</td><td>{row.latencia_ms ?? "—"} ms</td><td>{row.tipo_conexion || "—"}</td><td>{row.estado}</td></tr>)}</tbody></table>{connectivityRows.length === 0 && <p>No hay mediciones registradas.</p>}</div>
+          ) : (
             <Chart />
           ) : (
             <div className="table-scroll">
@@ -2050,18 +2567,19 @@ function ConnectivityPage({ admin = false }: { admin?: boolean }) {
                 <tbody>
                   {measured && (
                     <tr>
-                      <td>Medición actual</td>
+                      <td>Última medición</td>
                       <td>
-                        <b>42,8 Mbps</b>
+                        <b>{apiConfigured ? measurement?.velocidad_bajada ?? "—" : "42,8"} Mbps</b>
                       </td>
-                      <td>28 ms</td>
-                      <td>4,2 ms</td>
-                      <td>Wi-Fi</td>
+                      <td>{apiConfigured ? measurement?.latencia_ms ?? "—" : "28"} ms</td>
+                      <td>—</td>
+                      <td>{apiConfigured ? measurement?.tipo_conexion || "Desconocida" : "Wi-Fi"}</td>
                       <td>
-                        <span className="status success">Buena</span>
+                        <span className={`status ${connectivityStatus === "buena" || !apiConfigured ? "success" : connectivityStatus === "limitada" ? "warning" : "danger"}`}>{apiConfigured ? connectivityStatus || "Sin datos" : "Buena"}</span>
                       </td>
                     </tr>
                   )}
+                  {!apiConfigured && <>
                   <tr>
                     <td>12 jun 2025 · 3:24 p. m.</td>
                     <td>
@@ -2086,6 +2604,7 @@ function ConnectivityPage({ admin = false }: { admin?: boolean }) {
                       <span className="status danger">Mala</span>
                     </td>
                   </tr>
+                  </>}
                 </tbody>
               </table>
               <p className="data-note">
@@ -2131,6 +2650,37 @@ function ConnectivityPage({ admin = false }: { admin?: boolean }) {
 }
 
 function TrackingPage() {
+  return apiConfigured ? <ApiTrackingPage /> : <DemoTrackingPage />;
+}
+
+function ApiTrackingPage() {
+  type TeacherRow = { id: number; name: string; email: string; ultimo_acceso_en?: string | null; progreso: ApiProgress[] };
+  const [teachers, setTeachers] = useState<TeacherRow[]>([]);
+  const [selected, setSelected] = useState<{ docente: { id: number; name: string; email: string }; progreso: ApiProgress[] }>();
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api.teachersTracking(query || undefined).then((response) => { if (!cancelled) setTeachers(response.data); })
+      .catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : "No fue posible cargar el seguimiento."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [query]);
+  const viewTeacher = async (teacherId: number) => {
+    try {
+      setSelected(await api.teacherProgress(teacherId) as typeof selected);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No fue posible cargar el detalle del docente.");
+    }
+  };
+  if (selected) return <div><button className="back" onClick={() => setSelected(undefined)}><Icon name="arrow" /> Volver al seguimiento</button><PageTitle eyebrow="DETALLE DEL DOCENTE" title={selected.docente.name} subtitle={selected.docente.email} /><section className="panel table-panel"><table><thead><tr><th>Módulo</th><th>Estado</th><th>Avance</th><th>Nota</th></tr></thead><tbody>{selected.progreso.map((item) => <tr key={item.modulo_id}><td>{item.modulo}</td><td>{item.estado}</td><td>{item.porcentaje}%</td><td>{item.nota_evaluacion ?? "—"}</td></tr>)}</tbody></table></section></div>;
+  return <div><PageTitle eyebrow="ACOMPAÑAMIENTO" title="Seguimiento de docentes" subtitle="Consulta el avance individual de cada docente." /><section className="panel table-panel"><div className="table-tools"><div className="search"><Icon name="search" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar docente..." /></div></div>{error && <div className="form-message" role="alert">{error}</div>}<div className="table-scroll"><table><thead><tr><th>Docente</th><th>Módulos</th><th>Avance promedio</th><th>Último acceso</th><th></th></tr></thead><tbody>{loading && <tr><td colSpan={5}>Cargando seguimiento...</td></tr>}{!loading && teachers.length === 0 && <tr><td colSpan={5}>No se encontraron docentes.</td></tr>}{teachers.map((teacher) => { const average = teacher.progreso.length ? Math.round(teacher.progreso.reduce((sum, item) => sum + item.porcentaje, 0) / teacher.progreso.length) : 0; return <tr key={teacher.id}><td><div className="user-cell"><Avatar initials={teacher.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase()} /><div><b>{teacher.name}</b><span>{teacher.email}</span></div></div></td><td>{teacher.progreso.length}</td><td>{average}%</td><td>{teacher.ultimo_acceso_en ? new Date(teacher.ultimo_acceso_en).toLocaleString("es-CO") : "Sin ingreso"}</td><td><button className="secondary-btn" onClick={() => void viewTeacher(teacher.id)}>Ver detalle</button></td></tr>; })}</tbody></table></div></section></div>;
+}
+
+function DemoTrackingPage() {
   const [detail, setDetail] = useState(false);
   if (detail)
     return (
@@ -2291,6 +2841,19 @@ function TrackingPage() {
 }
 
 function TechnicalDashboard() {
+  const [metrics, setMetrics] = useState<Record<string, unknown>>();
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!apiConfigured) return;
+    api.dashboard("sistemas").then(setMetrics)
+      .catch((cause) => setError(cause instanceof Error ? cause.message : "No fue posible cargar las métricas."));
+  }, []);
+  const metric = (key: string, fallback: string, suffix = "") => {
+    if (!apiConfigured) return fallback;
+    const value = metrics?.[key];
+    if (typeof value !== "number") return metrics ? "No disponible" : "—";
+    return `${value.toLocaleString("es-CO", { maximumFractionDigits: 2 })}${suffix}`;
+  };
   return (
     <div>
       <PageTitle
@@ -2299,34 +2862,35 @@ function TechnicalDashboard() {
         subtitle="Resumen operativo de los últimos 60 días · Actualizado hace 2 minutos"
         action={
           <span className="live">
-            <i></i> Todos los sistemas operativos
+            <i></i> {apiConfigured ? "Métricas del servidor" : "Todos los sistemas operativos"}
           </span>
         }
       />
+      {error && <div className="form-message" role="alert">{error}</div>}
       <div className="stats-grid">
         <Stat
           icon="activity"
-          value="2,48 M"
+          value={metric("peticiones", "2,48 M")}
           label="Peticiones realizadas"
           note="+12,4% vs. período anterior"
         />
         <Stat
           icon="clock"
-          value="186 ms"
+          value={metric("tiempo_promedio_respuesta_ms", "186 ms", " ms")}
           label="Respuesta promedio"
           note="Objetivo: < 250 ms"
           tone="green"
         />
         <Stat
           icon="report"
-          value="0,18%"
+          value={metric("porcentaje_errores", "0,18%", "%")}
           label="Tasa de errores"
           note="-0,06% este mes"
           tone="orange"
         />
         <Stat
           icon="wifi"
-          value="99,97%"
+          value={metric("disponibilidad_porcentaje", "99,97%", "%")}
           label="Disponibilidad"
           note="Objetivo: 99,9%"
           tone="purple"
@@ -2413,6 +2977,81 @@ function TechnicalDashboard() {
 }
 
 function RolesPage() {
+  return apiConfigured ? <ApiRolesPage /> : <DemoRolesPage />;
+}
+
+function ApiRolesPage() {
+  type PagePermission = { id: number; page_name: string; route?: string };
+  type Permission = { id: number; permission: string };
+  type RoleDetail = ApiRole & { pages_by_role?: Array<{ id_page: number; id_permission: number }> };
+  const [roles, setRoles] = useState<ApiRole[]>([]);
+  const [pages, setPages] = useState<PagePermission[]>([]);
+  const [permissions, setPermissions] = useState<Permission[]>([]);
+  const [selectedRoleId, setSelectedRoleId] = useState<number | null>(null);
+  const [selectedPermissions, setSelectedPermissions] = useState<Set<string>>(new Set());
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<ApiRole | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const load = async () => {
+    try {
+      const [roleResult, catalogResult] = await Promise.all([api.roles(), api.permissionCatalog()]);
+      const catalog = catalogResult as { paginas: PagePermission[]; permisos: Permission[] };
+      setRoles(roleResult.roles);
+      setPages(catalog.paginas || []);
+      setPermissions(catalog.permisos || []);
+      setSelectedRoleId((current) => current || roleResult.roles[0]?.id || null);
+      setError("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible cargar roles y permisos."); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    if (!selectedRoleId) return;
+    api.role(selectedRoleId).then((response) => {
+      const role = (response as { rol: RoleDetail }).rol;
+      setSelectedPermissions(new Set((role.pages_by_role || []).map((item) => `${item.id_page}:${item.id_permission}`)));
+    }).catch((cause) => setError(cause instanceof Error ? cause.message : "No fue posible cargar los permisos del rol."));
+  }, [selectedRoleId]);
+  const selectedRole = roles.find((role) => role.id === selectedRoleId);
+  const saveRole = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    setSaving(true);
+    try {
+      if (editing) await api.updateRole(editing.id, { rol_name: String(data.get("rol_name")), description: String(data.get("description")) });
+      else await api.createRole({ rol_name: String(data.get("rol_name")), description: String(data.get("description")) });
+      setShowForm(false); setEditing(null); await load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible guardar el rol."); }
+    finally { setSaving(false); }
+  };
+  const savePermissions = async () => {
+    if (!selectedRoleId) return;
+    setSaving(true);
+    try {
+      const permisos = Array.from(selectedPermissions).map((value) => {
+        const [pagina_id, permiso_id] = value.split(":").map(Number);
+        return { pagina_id, permiso_id };
+      });
+      await api.updateRolePermissions(selectedRoleId, permisos);
+      setError("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible guardar los permisos."); }
+    finally { setSaving(false); }
+  };
+  const removeRole = async (id: number) => {
+    try { await api.deleteRole(id); if (selectedRoleId === id) setSelectedRoleId(null); await load(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible eliminar el rol."); }
+  };
+  return <div><PageTitle eyebrow="ADMINISTRACIÓN" title="Roles y permisos" subtitle="Configura roles y permisos de acceso a páginas." action={<button className="primary-btn" onClick={() => { setEditing(null); setShowForm(true); }}><Icon name="plus" /> Crear rol</button>} />
+    {error && <div className="form-message" role="alert">{error}</div>}
+    <section className="panel table-panel"><div className="table-scroll"><table><thead><tr><th>Rol</th><th>Descripción</th><th></th></tr></thead><tbody>{loading && <tr><td colSpan={3}>Cargando roles...</td></tr>}{roles.map((role) => <tr key={role.id}><td><b>{role.rol_name}</b></td><td>{role.description || "—"}</td><td className="actions"><button title="Editar" onClick={() => { setEditing(role); setShowForm(true); }}><Icon name="edit" /></button><button title="Eliminar" onClick={() => void removeRole(role.id)}><Icon name="close" /></button></td></tr>)}</tbody></table></div></section>
+    <section className="panel permission-panel"><PanelHead title="Matriz de permisos" subtitle="Los cambios aplican a todos los usuarios que tengan asignado el rol." /><label>Rol<select value={selectedRoleId || ""} onChange={(event) => setSelectedRoleId(Number(event.target.value) || null)}>{roles.map((role) => <option key={role.id} value={role.id}>{role.rol_name}</option>)}</select></label><div className="table-scroll"><table><thead><tr><th>Página</th>{permissions.map((permission) => <th key={permission.id}>{permission.permission}</th>)}</tr></thead><tbody>{pages.map((page) => <tr key={page.id}><td><b>{page.page_name}</b></td>{permissions.map((permission) => { const key = `${page.id}:${permission.id}`; return <td key={permission.id}><input type="checkbox" aria-label={`${permission.permission} ${page.page_name}`} checked={selectedPermissions.has(key)} onChange={(event) => setSelectedPermissions((current) => { const updated = new Set(current); if (event.target.checked) updated.add(key); else updated.delete(key); return updated; })} /></td>; })}</tr>)}</tbody></table></div><button className="primary-btn" disabled={saving || !selectedRoleId} onClick={() => void savePermissions()}>{saving ? "Guardando..." : "Guardar permisos"}</button></section>
+    {showForm && <div className="modal-backdrop"><form className="modal compact-modal" onSubmit={saveRole}><header><div><span className="eyebrow">ROLES</span><h2>{editing ? "Editar rol" : "Crear rol"}</h2></div><button type="button" className="icon-btn" onClick={() => setShowForm(false)}><Icon name="close" /></button></header><div className="form-grid"><label>Nombre<input name="rol_name" required maxLength={20} defaultValue={editing?.rol_name} /></label><label className="wide">Descripción<input name="description" maxLength={100} defaultValue={editing?.description || ""} /></label></div><footer><button type="button" className="secondary-btn" onClick={() => setShowForm(false)}>Cancelar</button><button className="primary-btn" disabled={saving}>{saving ? "Guardando..." : "Guardar rol"}</button></footer></form></div>}
+  </div>;
+}
+
+function DemoRolesPage() {
   const permissions = [
     "Dashboard",
     "Usuarios",
@@ -2596,6 +3235,66 @@ function DiagnosticAdminPage() {
 }
 
 function ActivitiesPage() {
+  return apiConfigured ? <ApiActivitiesPage /> : <DemoActivitiesPage />;
+}
+
+function ApiActivitiesPage() {
+  const [activities, setActivities] = useState<Array<{ id: number; titulo: string; instrucciones?: string; descripcion?: string; modulo?: { nombre?: string } }>>([]);
+  const [selected, setSelected] = useState<number | null>(null);
+  const [answer, setAnswer] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    api.activities().then(({ data }) => { if (!cancelled) setActivities(data as typeof activities); })
+      .catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : "No fue posible cargar las actividades."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+  const activity = activities.find((item) => item.id === selected);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!activity) return;
+    try {
+      await api.submitActivity(activity.id, { respuesta: answer });
+      setMessage("Tu entrega quedó registrada y está pendiente de calificación.");
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No fue posible enviar la actividad.");
+    }
+  };
+  return (
+    <div>
+      <PageTitle eyebrow="MI FORMACIÓN" title="Mis actividades" subtitle="Consulta instrucciones y entrega tus actividades prácticas." />
+      {error && <div className="form-message" role="alert">{error}</div>}
+      {message && <div className="status success" role="status">{message}</div>}
+      {loading ? <section className="panel">Cargando actividades...</section> : activities.length === 0 ? <section className="panel">No tienes actividades disponibles.</section> : (
+        <div className="dashboard-grid">
+          <section className="panel span-2">
+            {!activity ? <>
+              <PanelHead title="Actividades disponibles" />
+              {activities.map((item) => <div className="setting-row" key={item.id}>
+                <div><b>{item.titulo}</b><span>{item.modulo?.nombre || "Actividad formativa"}</span></div>
+                <button className="secondary-btn" onClick={() => { setSelected(item.id); setAnswer(""); setMessage(""); }}>Ver instrucciones</button>
+              </div>)}
+            </> : <>
+              <button className="back" onClick={() => setSelected(null)}><Icon name="arrow" /> Volver a actividades</button>
+              <PanelHead title={activity.titulo} subtitle={activity.modulo?.nombre || "Actividad formativa"} />
+              <div className="activity-instructions"><b>Instrucciones</b><p>{activity.instrucciones || activity.descripcion || "Completa y envía esta actividad."}</p></div>
+              <form className="submission-form" onSubmit={submit}>
+                <label>Respuesta escrita<textarea required rows={6} value={answer} onChange={(event) => setAnswer(event.target.value)} /></label>
+                <button className="primary-btn"><Icon name="plus" /> Enviar actividad</button>
+              </form>
+            </>}
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DemoActivitiesPage() {
   const [sent, setSent] = useState(false);
   return (
     <div>
@@ -2667,6 +3366,73 @@ function ActivitiesPage() {
 }
 
 function EvaluationsPage() {
+  return apiConfigured ? <ApiEvaluationsPage /> : <DemoEvaluationsPage />;
+}
+
+function ApiEvaluationsPage() {
+  const [evaluations, setEvaluations] = useState<Array<{ id: number; titulo: string; puntaje_minimo?: number; modulo?: { nombre?: string } }>>([]);
+  const [questions, setQuestions] = useState<Array<{ id: number; enunciado: string; puntaje: number; opciones: Array<{ id: number; texto: string }> }>>([]);
+  const [attemptId, setAttemptId] = useState<number | null>(null);
+  const [answers, setAnswers] = useState<Record<number, number>>({});
+  const [result, setResult] = useState<{ puntaje?: number; aprobado?: boolean }>();
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    api.evaluations().then(({ data }) => { if (!cancelled) setEvaluations(data as typeof evaluations); })
+      .catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : "No fue posible cargar las evaluaciones."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+  const start = async (id: number) => {
+    try {
+      const response = await api.startEvaluation(id) as { intento: { id: number }; preguntas: typeof questions };
+      setAttemptId(response.intento.id);
+      setQuestions(response.preguntas);
+      setAnswers({});
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No fue posible iniciar la evaluación.");
+    }
+  };
+  const finish = async () => {
+    if (attemptId === null) return;
+    try {
+      const respuestas = Object.entries(answers).map(([questionId, optionId]) => ({ pregunta_id: Number(questionId), opcion_id: optionId }));
+      await api.saveEvaluationAnswers(attemptId, respuestas);
+      const response = await api.finishEvaluation(attemptId) as { resultado: { puntaje?: number; aprobado?: boolean } };
+      setResult(response.resultado);
+      setAttemptId(null);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No fue posible finalizar la evaluación.");
+    }
+  };
+  if (result) return <div className="focus-page">
+    <div className="focus-icon"><Icon name={result.aprobado ? "award" : "report"} size={40} /></div>
+    <span className="eyebrow">EVALUACIÓN FINALIZADA</span>
+    <h1>{result.aprobado ? "Aprobaste la evaluación" : "Evaluación completada"}</h1>
+    <div className="result-number">{result.puntaje ?? 0}<small> / 100</small></div>
+    <button className="primary-btn" onClick={() => setResult(undefined)}>Volver a evaluaciones</button>
+  </div>;
+  if (attemptId !== null) return <div className="question-page">
+    <div className="exam-header"><div><span>{questions.length} preguntas</span><Progress value={questions.length ? Object.keys(answers).length / questions.length * 100 : 0} /></div></div>
+    {error && <div className="form-message" role="alert">{error}</div>}
+    {questions.map((question, index) => <section className="question-card" key={question.id}>
+      <span className="category">PREGUNTA {index + 1} · {question.puntaje} PUNTOS</span>
+      <h1>{question.enunciado}</h1>
+      <div className="answers">{question.opciones.map((option, optionIndex) => <button type="button" className={answers[question.id] === option.id ? "selected" : ""} key={option.id} onClick={() => setAnswers((current) => ({ ...current, [question.id]: option.id }))}><i>{String.fromCharCode(65 + optionIndex)}</i>{option.texto}</button>)}</div>
+    </section>)}
+    <button className="primary-btn" disabled={Object.keys(answers).length < questions.length} onClick={() => void finish()}>Guardar y finalizar</button>
+  </div>;
+  return <div>
+    <PageTitle eyebrow="MI FORMACIÓN" title="Mis evaluaciones" subtitle="Las evaluaciones se habilitan cuando completas las lecciones del módulo." />
+    {error && <div className="form-message" role="alert">{error}</div>}
+    {loading ? <section className="panel">Cargando evaluaciones...</section> : evaluations.length === 0 ? <section className="panel">No hay evaluaciones disponibles.</section> : <section className="panel table-panel"><table><thead><tr><th>Evaluación</th><th>Módulo</th><th>Puntaje mínimo</th><th></th></tr></thead><tbody>{evaluations.map((evaluation) => <tr key={evaluation.id}><td><b>{evaluation.titulo}</b></td><td>{evaluation.modulo?.nombre || "—"}</td><td>{evaluation.puntaje_minimo ?? 60}%</td><td><button className="primary-btn" onClick={() => void start(evaluation.id)}>Comenzar</button></td></tr>)}</tbody></table></section>}
+  </div>;
+}
+
+function DemoEvaluationsPage() {
   const [started, setStarted] = useState(false);
   const [finished, setFinished] = useState(false);
   if (finished)
@@ -2792,6 +3558,33 @@ function EvaluationsPage() {
 }
 
 function ProgressPage() {
+  return apiConfigured ? <ApiProgressPage /> : <DemoProgressPage />;
+}
+
+function ApiProgressPage() {
+  const [progressRows, setProgressRows] = useState<ApiProgress[]>([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    api.myProgress().then(({ progreso }) => { if (!cancelled) setProgressRows(progreso); })
+      .catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : "No fue posible cargar tu progreso."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+  const average = progressRows.length ? Math.round(progressRows.reduce((sum, item) => sum + item.porcentaje, 0) / progressRows.length) : 0;
+  const completed = progressRows.filter((item) => item.porcentaje === 100).length;
+  const inProgress = progressRows.filter((item) => item.porcentaje > 0 && item.porcentaje < 100).length;
+  const grades = progressRows.map((item) => item.nota_evaluacion).filter((grade): grade is number => grade !== null);
+  const averageGrade = grades.length ? (grades.reduce((sum, grade) => sum + grade, 0) / grades.length).toLocaleString("es-CO", { maximumFractionDigits: 1 }) : "—";
+  return <div><PageTitle eyebrow="MI FORMACIÓN" title="Mi progreso" subtitle="Consulta tu avance, las notas y el estado de cada módulo." />
+    {error && <div className="form-message" role="alert">{error}</div>}
+    <div className="stats-grid"><Stat icon="chart" value={`${average}%`} label="Avance general" /><Stat icon="check" value={String(completed)} label="Completados" tone="green" /><Stat icon="book" value={String(inProgress)} label="En curso" /><Stat icon="award" value={averageGrade} label="Promedio" tone="purple" /></div>
+    <section className="panel table-panel"><div className="table-scroll"><table><thead><tr><th>Módulo</th><th>Estado</th><th>Avance</th><th>Nota evaluación</th><th>Lecciones</th></tr></thead><tbody>{loading && <tr><td colSpan={5}>Cargando progreso...</td></tr>}{!loading && progressRows.length === 0 && <tr><td colSpan={5}>Aún no tienes progreso registrado.</td></tr>}{progressRows.map((row) => <tr key={row.modulo_id}><td><b>{row.modulo}</b></td><td><span className={`status ${row.porcentaje === 100 ? "success" : row.porcentaje ? "warning" : "muted-status"}`}>{row.estado}</span></td><td><div className="table-progress"><Progress value={row.porcentaje} /><b>{row.porcentaje}%</b></div></td><td>{row.nota_evaluacion ?? "—"}</td><td>{row.lecciones_completadas}/{row.total_lecciones}</td></tr>)}</tbody></table></div></section>
+  </div>;
+}
+
+function DemoProgressPage() {
   const states = [
     ["Ciudadanía digital responsable", "En curso", 78, "4,2", "03 mar 2025", "—"],
     ["Herramientas para el aula", "Completado", 100, "4,7", "12 feb 2025", "18 abr 2025"],
@@ -2855,6 +3648,51 @@ function ProgressPage() {
 }
 
 function DeadlinesPage() {
+  return apiConfigured ? <ApiDeadlinesPage /> : <DemoDeadlinesPage />;
+}
+
+function ApiDeadlinesPage() {
+  type Deadline = { id: number; modulo_id: number; fecha_inicio?: string | null; fecha_fin: string; estado: string; modulo?: { nombre: string } };
+  const [deadlines, setDeadlines] = useState<Deadline[]>([]);
+  const [modulesList, setModulesList] = useState<ApiModule[]>([]);
+  const [editing, setEditing] = useState<Deadline | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const load = async () => {
+    try {
+      const [deadlineResponse, moduleResponse] = await Promise.all([api.deadlines(), api.modules()]);
+      setDeadlines((deadlineResponse as { data: Deadline[] }).data || []);
+      setModulesList(moduleResponse.data);
+      setError("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible cargar los plazos."); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { void load(); }, []);
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const input = { modulo_id: Number(formData.get("modulo_id")), fecha_inicio: String(formData.get("fecha_inicio") || "") || null, fecha_fin: String(formData.get("fecha_fin")), estado: String(formData.get("estado")) };
+    setSaving(true);
+    try {
+      if (editing) await api.updateDeadline(editing.id, input); else await api.createDeadline(input);
+      setShowForm(false); setEditing(null); await load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible guardar el plazo."); }
+    finally { setSaving(false); }
+  };
+  const remove = async (id: number) => {
+    try { await api.deleteDeadline(id); await load(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible eliminar el plazo."); }
+  };
+  return <div><PageTitle eyebrow="PLANIFICACIÓN" title="Tiempos de entrega" subtitle="Establece las fechas disponibles para cada módulo." action={<button className="primary-btn" onClick={() => { setEditing(null); setShowForm(true); }}><Icon name="plus" /> Crear plazo</button>} />
+    {error && <div className="form-message" role="alert">{error}</div>}
+    <section className="panel table-panel"><div className="table-scroll"><table><thead><tr><th>Módulo</th><th>Inicio</th><th>Fecha límite</th><th>Estado</th><th></th></tr></thead><tbody>{loading && <tr><td colSpan={5}>Cargando plazos...</td></tr>}{!loading && deadlines.length === 0 && <tr><td colSpan={5}>No hay plazos configurados.</td></tr>}{deadlines.map((deadline) => <tr key={deadline.id}><td><b>{deadline.modulo?.nombre || modulesList.find((module) => module.id === deadline.modulo_id)?.nombre || "—"}</b></td><td>{deadline.fecha_inicio ? new Date(deadline.fecha_inicio).toLocaleDateString("es-CO") : "—"}</td><td>{new Date(deadline.fecha_fin).toLocaleDateString("es-CO")}</td><td><span className={`status ${deadline.estado === "activo" ? "success" : "muted-status"}`}>{deadline.estado}</span></td><td className="actions"><button title="Editar" onClick={() => { setEditing(deadline); setShowForm(true); }}><Icon name="edit" /></button><button title="Eliminar" onClick={() => void remove(deadline.id)}><Icon name="close" /></button></td></tr>)}</tbody></table></div></section>
+    {showForm && <div className="modal-backdrop"><form className="modal compact-modal" onSubmit={save}><header><div><span className="eyebrow">PLAZOS</span><h2>{editing ? "Editar plazo" : "Crear plazo"}</h2></div><button type="button" className="icon-btn" onClick={() => setShowForm(false)}><Icon name="close" /></button></header><div className="form-grid"><label className="wide">Módulo<select name="modulo_id" required defaultValue={editing?.modulo_id || ""}><option value="">Selecciona un módulo</option>{modulesList.map((module) => <option key={module.id} value={module.id}>{module.nombre}</option>)}</select></label><label>Fecha de inicio<input name="fecha_inicio" type="date" defaultValue={editing?.fecha_inicio?.slice(0, 10) || ""} /></label><label>Fecha límite<input name="fecha_fin" type="date" required defaultValue={editing?.fecha_fin.slice(0, 10)} /></label><label>Estado<select name="estado" defaultValue={editing?.estado || "activo"}><option value="activo">Activo</option><option value="inactivo">Inactivo</option></select></label></div><footer><button type="button" className="secondary-btn" onClick={() => setShowForm(false)}>Cancelar</button><button className="primary-btn" disabled={saving || modulesList.length === 0}>{saving ? "Guardando..." : "Guardar plazo"}</button></footer></form></div>}
+  </div>;
+}
+
+function DemoDeadlinesPage() {
   return (
     <div>
       <PageTitle
@@ -2924,6 +3762,38 @@ function DeadlinesPage() {
 }
 
 function ReportsPage({ connectivity = false }: { connectivity?: boolean }) {
+  return apiConfigured ? <ApiReportsPage connectivity={connectivity} /> : <DemoReportsPage connectivity={connectivity} />;
+}
+
+function ApiReportsPage({ connectivity }: { connectivity: boolean }) {
+  type ReportRow = { docente?: string; usuario?: { name?: string; email?: string }; modulo?: string; tarea?: string; nota?: number | null; fecha_inicio?: string; fecha_fin?: string; estado?: string; latencia_ms?: number; velocidad_bajada?: number; tipo_conexion?: string; medido_en?: string };
+  const [rows, setRows] = useState<ReportRow[]>([]);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    const query = { desde: from || undefined, hasta: to || undefined };
+    const request = connectivity ? api.connectivityReport(query) : api.progressReport(query);
+    request.then((response) => {
+      const data = response as { informe?: ReportRow[]; data?: ReportRow[] };
+      if (!cancelled) setRows(data.informe || data.data || []);
+    }).catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : "No fue posible generar el informe."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [connectivity, from, to]);
+  const averageGrade = rows.map((row) => row.nota).filter((grade): grade is number => grade !== null && grade !== undefined);
+  const button = connectivity ? undefined : <button className="secondary-btn" onClick={() => void api.downloadProgressReport().catch((cause) => setError(cause instanceof Error ? cause.message : "No fue posible descargar el informe."))}><Icon name="download" /> Exportar CSV</button>;
+  return <div><PageTitle eyebrow="INFORMES" title={connectivity ? "Informe de conectividad" : "Informe de progreso"} subtitle="Consulta información consolidada del periodo seleccionado." action={button} />
+    {error && <div className="form-message" role="alert">{error}</div>}
+    <section className="panel table-panel"><div className="table-tools"><label>Desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Hasta<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label></div><div className="table-scroll"><table><thead>{connectivity ? <tr><th>Docente</th><th>Fecha</th><th>Descarga</th><th>Latencia</th><th>Conexión</th><th>Estado</th></tr> : <tr><th>Docente</th><th>Módulo</th><th>Tarea</th><th>Nota</th><th>Inicio</th><th>Fin</th></tr>}</thead><tbody>{loading && <tr><td colSpan={connectivity ? 6 : 6}>Generando informe...</td></tr>}{!loading && rows.length === 0 && <tr><td colSpan={6}>No hay datos para el periodo seleccionado.</td></tr>}{rows.map((row, index) => connectivity ? <tr key={`${row.usuario?.email}-${row.medido_en}-${index}`}><td>{row.usuario?.name || row.usuario?.email || "—"}</td><td>{row.medido_en ? new Date(row.medido_en).toLocaleString("es-CO") : "—"}</td><td>{row.velocidad_bajada ?? "—"} Mbps</td><td>{row.latencia_ms ?? "—"} ms</td><td>{row.tipo_conexion || "—"}</td><td>{row.estado || "—"}</td></tr> : <tr key={`${row.docente}-${row.tarea}-${index}`}><td>{row.docente || "—"}</td><td>{row.modulo || "—"}</td><td>{row.tarea || "—"}</td><td>{row.nota ?? "—"}</td><td>{row.fecha_inicio ? new Date(row.fecha_inicio).toLocaleDateString("es-CO") : "—"}</td><td>{row.fecha_fin ? new Date(row.fecha_fin).toLocaleDateString("es-CO") : "—"}</td></tr>)}</tbody></table></div></section>
+    {!connectivity && <div className="stats-grid"><Stat icon="chart" value={String(rows.length)} label="Registros reportados" /><Stat icon="award" value={averageGrade.length ? (averageGrade.reduce((sum, grade) => sum + grade, 0) / averageGrade.length).toLocaleString("es-CO", { maximumFractionDigits: 1 }) : "—"} label="Promedio de notas" tone="purple" /></div>}
+  </div>;
+}
+
+function DemoReportsPage({ connectivity = false }: { connectivity?: boolean }) {
   return (
     <div>
       <PageTitle
@@ -2969,6 +3839,30 @@ function ReportsPage({ connectivity = false }: { connectivity?: boolean }) {
 }
 
 function TechnicalLogsPage({ page }: { page: string }) {
+  return apiConfigured ? <ApiTechnicalLogsPage page={page} /> : <DemoTechnicalLogsPage page={page} />;
+}
+
+function ApiTechnicalLogsPage({ page }: { page: string }) {
+  type MetricRow = { fecha: string; ruta: string; metodo: string; codigo_estado: number; solicitudes: number; tiempo_promedio_ms: number };
+  const [rows, setRows] = useState<MetricRow[]>([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(page !== "uptime");
+  const title = page === "errors" ? "Historial de errores" : page === "performance" ? "Rendimiento de comunicaciones" : page === "uptime" ? "Disponibilidad del sistema" : "Peticiones del sistema";
+  useEffect(() => {
+    if (page === "uptime") return;
+    let cancelled = false;
+    api.technicalHistory({ tipo: page }).then((response) => { if (!cancelled) setRows(response.data); })
+      .catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : "No fue posible cargar las métricas técnicas."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [page]);
+  return <div><PageTitle eyebrow="REGISTROS TÉCNICOS" title={title} subtitle="Datos agregados de las solicitudes registradas por el backend." />
+    {error && <div className="form-message" role="alert">{error}</div>}
+    {page === "uptime" ? <section className="panel"><h3>Disponibilidad no configurada</h3><p>La API no dispone de una fuente de monitoreo externo para calcular el tiempo de actividad.</p></section> : <section className="panel table-panel"><div className="table-scroll"><table><thead><tr><th>Fecha</th><th>Método</th><th>Ruta</th><th>Código</th><th>Peticiones</th><th>Tiempo promedio</th></tr></thead><tbody>{loading && <tr><td colSpan={6}>Cargando métricas...</td></tr>}{!loading && rows.length === 0 && <tr><td colSpan={6}>No hay registros técnicos para mostrar.</td></tr>}{rows.map((row, index) => <tr key={`${row.fecha}-${row.ruta}-${row.metodo}-${row.codigo_estado}-${index}`}><td>{row.fecha}</td><td><span className={`method ${row.metodo.toLowerCase()}`}>{row.metodo}</span></td><td><code>{row.ruta}</code></td><td><span className={`status ${row.codigo_estado < 400 ? "success" : row.codigo_estado < 500 ? "warning" : "danger"}`}>{row.codigo_estado}</span></td><td>{row.solicitudes}</td><td>{Number(row.tiempo_promedio_ms).toFixed(2)} ms</td></tr>)}</tbody></table></div></section>}
+  </div>;
+}
+
+function DemoTechnicalLogsPage({ page }: { page: string }) {
   const title =
     page === "errors"
       ? "Historial de errores"
@@ -3158,29 +4052,108 @@ function GenericPage({ page }: { page: string }) {
   );
 }
 
-function AppShell({ role, onLogout }: { role: Role; onLogout: () => void }) {
+function ProfilePage({ user, onUpdate }: { user?: ApiUser; onUpdate: (user: ApiUser) => void }) {
+  const [profile, setProfile] = useState<ApiUser | undefined>(user);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (!apiConfigured) return;
+    api.profile().then(({ perfil }) => setProfile(perfil))
+      .catch((cause) => setError(cause instanceof Error ? cause.message : "No fue posible cargar el perfil."));
+  }, []);
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    setSaving(true);
+    try {
+      await api.updateProfile({
+        first_name: String(formData.get("first_name")),
+        last_name: String(formData.get("last_name")),
+        email: String(formData.get("email")),
+      });
+      const { perfil } = await api.profile();
+      setProfile(perfil);
+      onUpdate(perfil);
+      setMessage("Tu perfil fue actualizado.");
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No fue posible actualizar el perfil.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (!apiConfigured) return <GenericPage page="profile" />;
+  return <div><PageTitle eyebrow="MI CUENTA" title="Mi perfil" subtitle="Actualiza tus datos personales." />
+    {error && <div className="form-message" role="alert">{error}</div>}
+    {message && <div className="status success" role="status">{message}</div>}
+    <section className="panel"><form className="submission-form" onSubmit={submit}>
+      <label>Nombres<input name="first_name" required defaultValue={profile?.first_name || profile?.name?.split(" ").slice(0, -1).join(" ") || ""} /></label>
+      <label>Apellidos<input name="last_name" required defaultValue={profile?.last_name || ""} /></label>
+      <label>Correo electrónico<input name="email" type="email" required defaultValue={profile?.email || ""} /></label>
+      <button className="primary-btn" disabled={saving}>{saving ? "Guardando..." : "Guardar cambios"}</button>
+    </form></section>
+  </div>;
+}
+
+function AppShell({ role, user, onLogout, onUserUpdated }: { role: Role; user?: ApiUser; onLogout: () => void; onUserUpdated: (user: ApiUser) => void }) {
   const [page, setPage] = useState("dashboard");
+  const [activeModuleId, setActiveModuleId] = useState<number | null>(null);
   const [mobile, setMobile] = useState(false);
   const [modal, setModal] = useState(false);
   const [toast, setToast] = useState("");
+  const [roleOptions, setRoleOptions] = useState<ApiRole[]>([]);
+  const [modalError, setModalError] = useState("");
   const info = roleInfo[role];
+  const displayName = user?.name || [user?.first_name, user?.last_name].filter(Boolean).join(" ") || info.name;
+  const displayInitials = displayName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
   const navigate = (p: string) => {
     setPage(p);
     setMobile(false);
   };
+  const showNotifications = async () => {
+    if (!apiConfigured) {
+      setToast("No tienes notificaciones nuevas.");
+      return;
+    }
+    try {
+      const response = await api.notifications(true);
+      const notification = response.notificaciones.data[0];
+      if (!notification) {
+        setToast("No tienes notificaciones nuevas.");
+        return;
+      }
+      await api.markNotificationRead(notification.id);
+      setToast(notification.titulo || notification.mensaje || "Tienes una notificación nueva.");
+    } catch (cause) {
+      setToast(cause instanceof Error ? cause.message : "No fue posible cargar las notificaciones.");
+    }
+  };
+  useEffect(() => {
+    if (!apiConfigured || page !== "users") return;
+    api.roles().then(({ roles }) => setRoleOptions(roles))
+      .catch((cause) => setModalError(cause instanceof Error ? cause.message : "No fue posible cargar los roles."));
+  }, [page]);
   let content: React.ReactNode;
   if (page === "dashboard")
     content =
       role === "teacher" ? (
-        <TeacherDashboard navigate={navigate} />
+        <TeacherDashboard navigate={navigate} user={user} />
       ) : role === "technical" ? (
         <TechnicalDashboard />
       ) : (
         <AdminDashboard trainer={role === "trainer"} navigate={navigate} />
       );
-  else if (page === "users") content = <UsersPage openModal={() => setModal(true)} />;
-  else if (page === "modules") content = <ModulesPage role={role} navigate={navigate} />;
-  else if (page === "learning") content = <LearningPage />;
+  else if (page === "users") content = <UsersPage roleOptions={roleOptions} openModal={() => {
+    setModalError("");
+    if (apiConfigured) api.roles().then(({ roles }) => setRoleOptions(roles))
+      .catch((cause) => setModalError(cause instanceof Error ? cause.message : "No fue posible cargar los roles."));
+    setModal(true);
+  }} />;
+  else if (page === "modules") content = <ModulesPage role={role} navigate={navigate} onSelectModule={(moduleId) => setActiveModuleId(moduleId ?? null)} />;
+  else if (page === "learning") content = <LearningPage moduleId={activeModuleId} onSelectModule={(moduleId) => setActiveModuleId(moduleId ?? null)} navigate={navigate} />;
+  else if (page === "lessons") content = apiConfigured ? <ApiLearningCatalogPage kind="lessons" /> : <GenericPage page={page} />;
+  else if (page === "resources") content = apiConfigured ? <ApiLearningCatalogPage kind="resources" /> : <GenericPage page={page} />;
   else if (page === "diagnostic") content = <DiagnosticPage />;
   else if (page === "connectivity" || page === "connectivity-admin")
     content = <ConnectivityPage admin={page === "connectivity-admin"} />;
@@ -3192,6 +4165,7 @@ function AppShell({ role, onLogout }: { role: Role; onLogout: () => void }) {
   else if (page === "progress") content = <ProgressPage />;
   else if (page === "deadlines") content = <DeadlinesPage />;
   else if (page === "reports") content = <ReportsPage />;
+  else if (page === "profile") content = <ProfilePage user={user} onUpdate={onUserUpdated} />;
   else if (["requests", "performance", "errors", "uptime"].includes(page))
     content = <TechnicalLogsPage page={page} />;
   else content = <GenericPage page={page} />;
@@ -3243,15 +4217,15 @@ function AppShell({ role, onLogout }: { role: Role; onLogout: () => void }) {
           <div className="top-actions">
             <button
               className="icon-btn notification"
-              onClick={() => setToast("No tienes notificaciones nuevas.")}
+              onClick={() => void showNotifications()}
             >
               <Icon name="bell" />
               <i></i>
             </button>
             <div className="profile">
-              <Avatar initials={info.initials} color={info.color} />
+              <Avatar initials={displayInitials || info.initials} color={info.color} />
               <div>
-                <b>{info.name}</b>
+                <b>{displayName}</b>
                 <span>{info.label}</span>
               </div>
               <Icon name="arrow" size={15} />
@@ -3264,8 +4238,28 @@ function AppShell({ role, onLogout }: { role: Role; onLogout: () => void }) {
         <div className="modal-backdrop">
           <form
             className="modal"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
+              if (apiConfigured) {
+                const formData = new FormData(e.currentTarget);
+                const firstName = [formData.get("first_name"), formData.get("second_name")].filter(Boolean).join(" ");
+                const lastName = [formData.get("last_name"), formData.get("second_last_name")].filter(Boolean).join(" ");
+                try {
+                  await api.createUser({
+                    first_name: String(firstName),
+                    last_name: String(lastName),
+                    email: String(formData.get("email")),
+                    contrasena: String(formData.get("contrasena")),
+                    rol_id: Number(formData.get("rol_id")),
+                  });
+                  window.dispatchEvent(new Event("educonecta:users-changed"));
+                  setModal(false);
+                  setToast("Usuario registrado correctamente.");
+                } catch (cause) {
+                  setModalError(cause instanceof Error ? cause.message : "No fue posible registrar el usuario.");
+                }
+                return;
+              }
               setModal(false);
               setToast("Usuario registrado correctamente.");
             }}
@@ -3279,37 +4273,38 @@ function AppShell({ role, onLogout }: { role: Role; onLogout: () => void }) {
                 <Icon name="close" />
               </button>
             </header>
+            {modalError && <div className="form-message" role="alert">{modalError}</div>}
             <div className="form-grid">
               <label>
                 Primer nombre
-                <input required placeholder="Ej. Claudia" />
+                <input required name="first_name" placeholder="Ej. Claudia" />
               </label>
               <label>
                 Segundo nombre
-                <input placeholder="Ej. Marcela" />
+                <input name="second_name" placeholder="Ej. Marcela" />
               </label>
               <label>
                 Primer apellido
-                <input required placeholder="Ej. Rodríguez" />
+                <input required name="last_name" placeholder="Ej. Rodríguez" />
               </label>
               <label>
                 Segundo apellido
-                <input placeholder="Ej. López" />
+                <input name="second_last_name" placeholder="Ej. López" />
               </label>
               <label>
                 Correo electrónico
-                <input required type="email" placeholder="nombre@institucion.edu.co" />
+                <input required name="email" type="email" placeholder="nombre@institucion.edu.co" />
               </label>
               <label>
                 Contraseña temporal
-                <input required type="password" minLength={8} placeholder="Mínimo 8 caracteres" />
+                <input required name="contrasena" type="password" minLength={8} placeholder="Mínimo 8 caracteres" />
               </label>
               <label>
                 Rol
-                <select>
-                  <option>Docente</option>
-                  <option>Capacitador</option>
-                  <option>Administrador</option>
+                <select name={apiConfigured ? "rol_id" : "rol"} required>
+                  {apiConfigured
+                    ? roleOptions.length ? roleOptions.map((apiRole) => <option key={apiRole.id} value={apiRole.id}>{apiRole.rol_name}</option>) : <option value="">Cargando roles...</option>
+                    : <><option>Docente</option><option>Capacitador</option><option>Administrador</option></>}
                 </select>
               </label>
               <label>
@@ -3344,7 +4339,7 @@ function AppShell({ role, onLogout }: { role: Role; onLogout: () => void }) {
               <button type="button" className="secondary-btn" onClick={() => setModal(false)}>
                 Cancelar
               </button>
-              <button className="primary-btn">Registrar usuario</button>
+              <button className="primary-btn" disabled={apiConfigured && roleOptions.length === 0}>Registrar usuario</button>
             </footer>
           </form>
         </div>
@@ -3366,9 +4361,35 @@ function AppShell({ role, onLogout }: { role: Role; onLogout: () => void }) {
 
 export default function App() {
   const [role, setRole] = useState<Role | null>(null);
+  const [user, setUser] = useState<ApiUser>();
+  const [restoringSession, setRestoringSession] = useState(Boolean(getApiToken()));
+
+  useEffect(() => {
+    if (!getApiToken()) return;
+    api.currentUser()
+      .then(({ usuario }) => {
+        const apiRole = roleFromApiUser(usuario);
+        if (apiRole) {
+          setUser(usuario);
+          setRole(apiRole);
+        } else {
+          setApiToken(null);
+        }
+      })
+      .catch(() => setApiToken(null))
+      .finally(() => setRestoringSession(false));
+  }, []);
+
+  const logout = async () => {
+    if (getApiToken()) await api.logout().catch(() => setApiToken(null));
+    setUser(undefined);
+    setRole(null);
+  };
+
+  if (restoringSession) return <main className="login-page"><p className="muted">Restaurando sesiÃ³n...</p></main>;
   return role ? (
-    <AppShell role={role} onLogout={() => setRole(null)} />
+    <AppShell role={role} user={user} onLogout={logout} onUserUpdated={setUser} />
   ) : (
-    <Login onLogin={setRole} />
+    <Login onLogin={(nextRole, nextUser) => { setRole(nextRole); setUser(nextUser); }} />
   );
 }
