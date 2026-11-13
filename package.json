@@ -1,9 +1,12 @@
 {
   "name": "figma-make-app",
   "version": "1.0.0",
+  "homepage": "https://nabohorquez.github.io/educonecta_cajica",
   "private": true,
   "type": "module",
   "scripts": {
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d dist",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
@@ -20,6 +23,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.0",
+    "gh-pages": "^6.3.0",
     "oxfmt": "^0.76.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",
