@@ -1,5 +1,4 @@
 node_modules/
-dist/
 build/
 .cache/
 .env*
@@ -31,7 +30,6 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
