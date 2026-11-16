@@ -41,6 +41,15 @@ export type ApiNotification = {
   leida?: boolean;
   created_at?: string;
 };
+export type ApiConnectivityMeasurement = {
+  id?: number;
+  velocidad_bajada?: number | null;
+  latencia_ms?: number | null;
+  tipo_conexion?: string | null;
+  estado: string;
+  usuario_id?: number;
+  medido_en?: string;
+};
 
 export class ApiError extends Error {
   status: number;
@@ -171,7 +180,7 @@ export const api = {
   updateRole: (id: number, data: Partial<ApiRole>) => request(`/roles/${id}`, json("PUT", data)),
   deleteRole: (id: number) => request(`/roles/${id}`, json("DELETE")),
   updateRolePermissions: (id: number, permisos: Array<{ pagina_id: number; permiso_id: number }>) =>
-    request(`/roles/${id}/permisos`, json("PUT", { permisos })),
+    request<{ mensaje?: string }>(`/roles/${id}/permisos`, json("PUT", { permisos })),
   permissionCatalog: () => request("/catalogos/permisos"),
   levels: () => request("/niveles-competencia"),
   competencies: () => request("/competencias"),
@@ -253,9 +262,18 @@ export const api = {
   },
   progressReportCsvUrl: () => `${API_BASE_URL}/reportes/progreso/exportar`,
   downloadProgressReport: () => downloadFile("/reportes/progreso/exportar", "informe-progreso.csv"),
-  recordConnectivity: (data: Record<string, unknown>) =>
-    request("/conectividad/mediciones", json("POST", data)),
-  latestConnectivity: () => request("/conectividad/ultima-medicion"),
+  recordConnectivity: (data: {
+    velocidad_bajada?: number;
+    latencia_ms?: number;
+    tipo_conexion?: string;
+    estado: string;
+  }) =>
+    request<{ mensaje: string; medicion: ApiConnectivityMeasurement }>(
+      "/conectividad/mediciones",
+      json("POST", data),
+    ),
+  latestConnectivity: () =>
+    request<{ medicion: ApiConnectivityMeasurement | null }>("/conectividad/ultima-medicion"),
   connectivityReport: (params: { usuario_id?: number; desde?: string; hasta?: string } = {}) => {
     const query = new URLSearchParams(
       Object.entries(params).filter(([, value]) => value !== undefined) as Array<[string, string]>,

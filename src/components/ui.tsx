@@ -266,6 +266,27 @@ export function PageTitle({
     </div>
   );
 }
+
+export function PanelHead({
+  title,
+  subtitle,
+  action,
+}: {
+  title: string;
+  subtitle?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <header className="panel-head">
+      <div>
+        <h3>{title}</h3>
+        {subtitle && <p>{subtitle}</p>}
+      </div>
+      {action}
+    </header>
+  );
+}
+
 export function Avatar({ initials, color }: { initials: string; color?: string }) {
   return (
     <span className="avatar" style={color ? { background: color } : undefined}>
