@@ -1,20 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, apiConfigured, type ApiRole } from '@/api/client';
 import { Avatar, Icon, PageTitle, Stat } from '@/components/ui';
+import "./css/UsersPage.css";
 
 type Role = "admin" | "trainer" | "teacher" | "technical";
+const USERS_PER_PAGE = 100;
 
 export function UsersPage({ openModal, roleOptions, demoUsers, roleLabels }: { openModal: () => void; roleOptions: ApiRole[]; demoUsers: Array<{ id: string; name: string; initials: string; email: string; school: string; role: string; area: string; status: string; last: string }>; roleLabels: Record<string, { label: string }> }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("Todos");
   const [page, setPage] = useState(1);
   const [totalUsers, setTotalUsers] = useState(apiConfigured ? 0 : demoUsers.length);
+  const [userStats, setUserStats] = useState<{ total: number; active: number; inactive: number; institutions: number } | null>(null);
   const [lastPage, setLastPage] = useState(1);
   const [userRows, setUserRows] = useState(() =>
     apiConfigured ? [] : demoUsers.map((user) => ({ ...user, roles: [user.role] })),
   );
   const [loading, setLoading] = useState(apiConfigured);
   const [apiError, setApiError] = useState("");
+  const [statsError, setStatsError] = useState("");
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [editingUser, setEditingUser] = useState<number | null>(null);
   useEffect(() => {
@@ -29,7 +33,7 @@ export function UsersPage({ openModal, roleOptions, demoUsers, roleLabels }: { o
     api.users({
       buscar: query || undefined,
       activo: status === "Todos" ? undefined : status === "Activo",
-      por_pagina: 100,
+      por_pagina: USERS_PER_PAGE,
       page,
     })
       .then(({ data, total, current_page, last_page }) => {
@@ -63,6 +67,34 @@ export function UsersPage({ openModal, roleOptions, demoUsers, roleLabels }: { o
       });
     return () => { cancelled = true; };
   }, [query, status, refreshVersion, page]);
+  useEffect(() => {
+    if (!apiConfigured) return;
+    let cancelled = false;
+    const fetchTotal = async (activo?: boolean) => {
+      const response = await api.users({ activo, por_pagina: 1 });
+      if (response.total === undefined) {
+        throw new Error("El servidor no devolvió el total de usuarios.");
+      }
+      return response.total;
+    };
+    const fetchInstitutionTotal = async () => {
+      const response = await api.institutions({ por_pagina: 1 });
+      if (response.total === undefined) {
+        throw new Error("El servidor no devolvió el total de instituciones.");
+      }
+      return response.total;
+    };
+    Promise.all([fetchTotal(), fetchTotal(true), fetchTotal(false), fetchInstitutionTotal()])
+      .then(([total, active, inactive, institutions]) => {
+        if (cancelled) return;
+        setUserStats({ total, active, inactive, institutions });
+        setStatsError("");
+      })
+      .catch((cause) => {
+        if (!cancelled) setStatsError(cause instanceof Error ? cause.message : "No fue posible cargar el resumen de usuarios.");
+      });
+    return () => { cancelled = true; };
+  }, [refreshVersion]);
   useEffect(() => { setPage(1); }, [query, status]);
   const toggleUserStatus = async (user: (typeof userRows)[number]) => {
     const nextActive = user.status !== "Activo";
@@ -77,7 +109,17 @@ export function UsersPage({ openModal, roleOptions, demoUsers, roleLabels }: { o
     setUserRows((rows) => rows.map((row) => row.id === user.id
       ? { ...row, status: nextActive ? "Activo" : "Inactivo" }
       : row));
+    if (apiConfigured) window.dispatchEvent(new Event("educonecta:users-changed"));
   };
+  const activeUsers = apiConfigured
+    ? userStats?.active
+    : userRows.filter((user) => user.status === "Activo").length;
+  const inactiveUsers = apiConfigured
+    ? userStats?.inactive
+    : userRows.filter((user) => user.status === "Inactivo").length;
+  const institutionCount = apiConfigured
+    ? userStats?.institutions
+    : new Set(userRows.map((user) => user.school).filter((school) => school && school !== "—")).size;
   const filtered = useMemo(
     () =>
       userRows.filter(
@@ -99,11 +141,16 @@ export function UsersPage({ openModal, roleOptions, demoUsers, roleLabels }: { o
           </button>
         }
       />
+      {statsError && <div className="form-message" role="alert">{statsError}</div>}
       <div className="stats-grid small">
-        <Stat icon="users" value="1.312" label="Usuarios totales" />
-        <Stat icon="check" value="1.086" label="Activos" tone="green" />
-        <Stat icon="clock" value="226" label="Inactivos" tone="orange" />
-        <Stat icon="school" value="14" label="Instituciones" tone="purple" />
+        <Stat
+          icon="users"
+          value={(apiConfigured ? userStats?.total : userRows.length)?.toLocaleString("es-CO") ?? "—"}
+          label="Usuarios totales"
+        />
+        <Stat icon="check" value={activeUsers?.toLocaleString("es-CO") ?? "—"} label="Activos" tone="green" />
+        <Stat icon="clock" value={inactiveUsers?.toLocaleString("es-CO") ?? "—"} label="Inactivos" tone="orange" />
+        <Stat icon="school" value={institutionCount?.toLocaleString("es-CO") ?? "—"} label="Instituciones" tone="purple" />
       </div>
       <section className="panel table-panel">
         {apiError && <div className="form-message" role="alert">{apiError}</div>}
@@ -200,7 +247,7 @@ export function UsersPage({ openModal, roleOptions, demoUsers, roleLabels }: { o
           </table>
         </div>
         <div className="pagination">
-          <span>Mostrando {totalUsers === 0 ? 0 : (page - 1) * 100 + 1}–{Math.min(page * 100, totalUsers)} de {totalUsers.toLocaleString("es-CO")} usuarios</span>
+          <span>Mostrando {totalUsers === 0 ? 0 : (page - 1) * USERS_PER_PAGE + 1}–{Math.min(page * USERS_PER_PAGE, totalUsers)} de {totalUsers.toLocaleString("es-CO")} usuarios</span>
           <div>
             <button disabled={page <= 1 || loading} onClick={() => setPage((current) => Math.max(1, current - 1))}>Anterior</button>
             <span>{page} / {lastPage}</span>
@@ -235,8 +282,7 @@ export function UsersPage({ openModal, roleOptions, demoUsers, roleLabels }: { o
           >
             <header>
               <div>
-                <span className="eyebrow">ROLES_X_USUARIO</span>
-                <h2>Asignar roles</h2>
+                <h2 className='eyebrow'>Asignar roles</h2>
               </div>
               <button type="button" className="icon-btn" onClick={() => setEditingUser(null)}>
                 <Icon name="close" />
@@ -247,21 +293,35 @@ export function UsersPage({ openModal, roleOptions, demoUsers, roleLabels }: { o
                 <Avatar initials={userRows[editingUser].initials} />
                 <div>
                   <b>{userRows[editingUser].name}</b>
-                  <span>{userRows[editingUser].email}</span>
+                  <span> {userRows[editingUser].email}</span>
                 </div>
               </div>
               <p>
-                Selecciona uno o varios roles. La asignación corresponde a la relación{" "}
-                <code>roles_x_usuario</code>.
+                Selecciona el rol que deseas asignar a este usuario.
               </p>
               {(apiConfigured ? roleOptions.map((option) => ({ key: option.rol_name, label: option.rol_name })) : (Object.keys(roleLabels) as Role[]).map((roleKey) => ({ key: roleKey, label: roleLabels[roleKey].label }))).map(({ key: roleKey, label }) => {
                 const checked = userRows[editingUser].roles.includes(label);
                 return (
-                  <label className="role-check" key={roleKey}>
+                  <div className="role-option" key={roleKey}>
+                    <label className="role-check" key={roleKey} htmlFor={`role-${roleKey}`}>
+                      <span>
+                        <b>{label}</b>
+                        <small>
+                          {roleKey === "admin"
+                            ? "Administración general"
+                            : roleKey === "trainer"
+                              ? "Seguimiento y formación"
+                              : roleKey === "teacher"
+                                ? "Formación personal"
+                                : " Monitoreo técnico"}
+                        </small>
+                      </span>
+                    </label>
                     <input
                       type={apiConfigured ? "radio" : "checkbox"}
                       name={apiConfigured ? "role_assignment" : undefined}
                       checked={checked}
+                      id={`role-${roleKey}`}
                       onChange={() =>
                         setUserRows((rows) =>
                           rows.map((row, index) =>
@@ -277,19 +337,7 @@ export function UsersPage({ openModal, roleOptions, demoUsers, roleLabels }: { o
                         )
                       }
                     />
-                    <span>
-                      <b>{label}</b>
-                      <small>
-                        {roleKey === "admin"
-                          ? "Administración general"
-                          : roleKey === "trainer"
-                            ? "Seguimiento y formación"
-                            : roleKey === "teacher"
-                              ? "Formación personal"
-                              : "Monitoreo técnico"}
-                      </small>
-                    </span>
-                  </label>
+                  </div>
                 );
               })}
               {userRows[editingUser].roles.length === 0 && (

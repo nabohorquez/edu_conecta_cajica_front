@@ -5,6 +5,7 @@ import {
   getApiToken,
   roleFromApiUser,
   setApiToken,
+  type ApiInstitution,
   type ApiProgress,
   type ApiRole,
   type ApiUser,
@@ -26,6 +27,7 @@ import { LearningPage, ApiLearningCatalogPage } from "@/features/modules/Learnin
 import { ModulesPage } from "@/features/modules/ModulesPage";
 import { ProfilePage } from "@/features/users/ProfilePage";
 import { UsersPage } from "@/features/users/UsersPage";
+import { InstitutionsPage } from "@/features/users/InstitutionsPage";
 import type { Role } from "@/types/app";
 
 const roleInfo = {
@@ -58,6 +60,7 @@ const menus: Record<Role, { label: string; icon: IconName; page: string }[]> = {
   admin: [
     { label: "Dashboard", icon: "home", page: "dashboard" },
     { label: "Gestión de usuarios", icon: "users", page: "users" },
+    { label: "Instituciones", icon: "school", page: "institutions" },
     { label: "Gestión de roles", icon: "shield", page: "roles" },
     { label: "Gestión de permisos", icon: "lock", page: "permissions" },
     { label: "Módulos formativos", icon: "book", page: "modules" },
@@ -91,6 +94,7 @@ const menus: Record<Role, { label: string; icon: IconName; page: string }[]> = {
   technical: [
     { label: "Dashboard técnico", icon: "home", page: "dashboard" },
     { label: "Gestión de usuarios", icon: "users", page: "users" },
+    { label: "Instituciones", icon: "school", page: "institutions" },
     { label: "Gestión de roles", icon: "shield", page: "roles" },
     { label: "Gestión de permisos", icon: "lock", page: "permissions" },
     { label: "Módulos formativos", icon: "book", page: "modules" },
@@ -626,10 +630,17 @@ function AppShell({ role, user, onLogout, onUserUpdated }: { role: Role; user?: 
   const [modal, setModal] = useState(false);
   const [toast, setToast] = useState("");
   const [roleOptions, setRoleOptions] = useState<ApiRole[]>([]);
+  const [institutionOptions, setInstitutionOptions] = useState<ApiInstitution[]>([]);
+  const [institutionsLoading, setInstitutionsLoading] = useState(false);
+  const [selectedUserRole, setSelectedUserRole] = useState("");
   const [modalError, setModalError] = useState("");
   const info = roleInfo[role];
   const displayName = user?.name || [user?.first_name, user?.last_name].filter(Boolean).join(" ") || info.name;
   const displayInitials = displayName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+  const selectedRoleName = apiConfigured
+    ? roleOptions.find((option) => String(option.id) === selectedUserRole)?.rol_name || ""
+    : selectedUserRole;
+  const needsInstitutionalAssignment = /docente|capacitador/i.test(selectedRoleName);
   const navigate = (p: string) => {
     setPage(p);
     setMobile(false);
@@ -669,10 +680,21 @@ function AppShell({ role, user, onLogout, onUserUpdated }: { role: Role; user?: 
       );
   else if (page === "users") content = <UsersPage demoUsers={users} roleLabels={roleInfo} roleOptions={roleOptions} openModal={() => {
     setModalError("");
+    setSelectedUserRole("");
+    setInstitutionOptions([]);
+    setInstitutionsLoading(apiConfigured);
     if (apiConfigured) api.roles().then(({ roles }) => setRoleOptions(roles))
       .catch((cause) => setModalError(cause instanceof Error ? cause.message : "No fue posible cargar los roles."));
+    if (apiConfigured) api.institutions({ activo: true, por_pagina: 100 })
+      .then(({ data }) => {
+        setInstitutionOptions(data);
+        if (data.length === 0) setModalError("No hay instituciones activas para asignar.");
+      })
+      .catch((cause) => setModalError(cause instanceof Error ? cause.message : "No fue posible cargar las instituciones."))
+      .finally(() => setInstitutionsLoading(false));
     setModal(true);
   }} />;
+  else if (page === "institutions") content = <InstitutionsPage />;
   else if (page === "modules") content = <ModulesPage role={role} navigate={navigate} demoModules={modules} onSelectModule={(moduleId) => setActiveModuleId(moduleId ?? null)} />;
   else if (page === "learning") content = <LearningPage moduleId={activeModuleId} onSelectModule={(moduleId) => setActiveModuleId(moduleId ?? null)} navigate={navigate} />;
   else if (page === "lessons") content = apiConfigured ? <ApiLearningCatalogPage kind="lessons" /> : <GenericPage page={page} />;
@@ -767,14 +789,37 @@ function AppShell({ role, user, onLogout, onUserUpdated }: { role: Role; user?: 
                 const formData = new FormData(e.currentTarget);
                 const firstName = [formData.get("first_name"), formData.get("second_name")].filter(Boolean).join(" ");
                 const lastName = [formData.get("last_name"), formData.get("second_last_name")].filter(Boolean).join(" ");
+                const email = String(formData.get("email"));
                 try {
-                  await api.createUser({
+                  const result = await api.createUser({
                     first_name: String(firstName),
                     last_name: String(lastName),
-                    email: String(formData.get("email")),
+                    email,
                     contrasena: String(formData.get("contrasena")),
                     rol_id: Number(formData.get("rol_id")),
                   });
+                  if (needsInstitutionalAssignment) {
+                    try {
+                      let createdUserId = result.usuario?.id;
+                      if (!createdUserId) {
+                        const matchingUsers = await api.users({ buscar: email, por_pagina: 100 });
+                        createdUserId = matchingUsers.data.find(
+                          (candidate) => candidate.email.toLocaleLowerCase("es") === email.toLocaleLowerCase("es"),
+                        )?.id;
+                      }
+                      if (!createdUserId) {
+                        throw new Error("No se pudo identificar al usuario creado para asociarlo a la institución.");
+                      }
+                      await api.addInstitutionUsers(Number(formData.get("institucion_id")), [createdUserId]);
+                    } catch (cause) {
+                      window.dispatchEvent(new Event("educonecta:users-changed"));
+                      setModal(false);
+                      setToast(cause instanceof Error
+                        ? `Usuario creado, pero no fue posible asignar la institución: ${cause.message}`
+                        : "Usuario creado, pero no fue posible asignar la institución.");
+                      return;
+                    }
+                  }
                   window.dispatchEvent(new Event("educonecta:users-changed"));
                   setModal(false);
                   setToast("Usuario registrado correctamente.");
@@ -824,28 +869,46 @@ function AppShell({ role, user, onLogout, onUserUpdated }: { role: Role; user?: 
               </label>
               <label>
                 Rol
-                <select name={apiConfigured ? "rol_id" : "rol"} required>
+                <select
+                  name={apiConfigured ? "rol_id" : "rol"}
+                  value={selectedUserRole}
+                  onChange={(event) => setSelectedUserRole(event.target.value)}
+                  required
+                >
+                  <option value="">Selecciona un rol</option>
                   {apiConfigured
                     ? roleOptions.length ? roleOptions.map((apiRole) => <option key={apiRole.id} value={apiRole.id}>{apiRole.rol_name}</option>) : <option value="">Cargando roles...</option>
                     : <><option>Docente</option><option>Capacitador</option><option>Administrador</option></>}
                 </select>
               </label>
-              <label>
-                Institución
-                <select>
-                  <option>I.E.D. Pompilio Martínez</option>
-                  <option>I.E.D. Capellanía</option>
-                </select>
-              </label>
-              <label className="wide">
-                Área de formación
-                <select>
-                  <option>Ciencias naturales</option>
-                  <option>Matemáticas</option>
-                  <option>Tecnología e informática</option>
-                  <option>Lenguaje</option>
-                </select>
-              </label>
+              {needsInstitutionalAssignment && (
+                <>
+                  <label>
+                    Institución
+                    <select name={apiConfigured ? "institucion_id" : "institucion"} required>
+                      <option value="">{institutionsLoading ? "Cargando instituciones..." : "Selecciona una institución"}</option>
+                      {apiConfigured
+                        ? institutionOptions.map((institution) => (
+                          <option key={institution.id} value={institution.id}>{institution.nombre}</option>
+                        ))
+                        : <>
+                          <option value="I.E.D. Pompilio Martínez">I.E.D. Pompilio Martínez</option>
+                          <option value="I.E.D. Capellanía">I.E.D. Capellanía</option>
+                        </>}
+                    </select>
+                  </label>
+                  <label className="wide">
+                    Área de formación
+                    <select name="area_formacion" required>
+                      <option value="">Selecciona un área</option>
+                      <option value="Ciencias naturales">Ciencias naturales</option>
+                      <option value="Matemáticas">Matemáticas</option>
+                      <option value="Tecnología e informática">Tecnología e informática</option>
+                      <option value="Lenguaje">Lenguaje</option>
+                    </select>
+                  </label>
+                </>
+              )}
               <label>
                 Estado
                 <select>
@@ -862,7 +925,16 @@ function AppShell({ role, user, onLogout, onUserUpdated }: { role: Role; user?: 
               <button type="button" className="secondary-btn" onClick={() => setModal(false)}>
                 Cancelar
               </button>
-              <button className="primary-btn" disabled={apiConfigured && roleOptions.length === 0}>Registrar usuario</button>
+              <button
+                className="primary-btn"
+                disabled={
+                  apiConfigured &&
+                  (roleOptions.length === 0 ||
+                    (needsInstitutionalAssignment && (institutionsLoading || institutionOptions.length === 0)))
+                }
+              >
+                Registrar usuario
+              </button>
             </footer>
           </form>
         </div>

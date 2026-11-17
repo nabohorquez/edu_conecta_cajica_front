@@ -16,6 +16,7 @@ tags:
   - name: Autenticación
   - name: Perfil
   - name: Usuarios y roles
+  - name: Instituciones
   - name: Formación
   - name: Diagnóstico
   - name: Evaluaciones
@@ -268,6 +269,125 @@ paths:
                 activo: { type: boolean }
       responses:
         '200': { $ref: '#/components/responses/Mensaje' }
+  /instituciones:
+    get:
+      tags: [Instituciones]
+      summary: Listar instituciones y sus docentes/capacitadores (administrador o sistemas)
+      parameters:
+        - in: query
+          name: activo
+          schema: { type: boolean }
+        - $ref: '#/components/parameters/PorPagina'
+      responses:
+        '200': { $ref: '#/components/responses/ListaPaginada' }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [Instituciones]
+      summary: Crear una institución
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InstitucionCrear' }
+      responses:
+        '201': { $ref: '#/components/responses/Objeto' }
+        '422': { $ref: '#/components/responses/Validacion' }
+  /instituciones/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Instituciones]
+      summary: Consultar una institución y sus usuarios asociados
+      responses:
+        '200': { $ref: '#/components/responses/Objeto' }
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [Instituciones]
+      summary: Actualizar una institución
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InstitucionEntrada' }
+      responses:
+        '200': { $ref: '#/components/responses/Objeto' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Validacion' }
+    patch:
+      tags: [Instituciones]
+      summary: Actualizar parcialmente una institución
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InstitucionEntrada'
+      responses:
+        '200': { $ref: '#/components/responses/Objeto' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Validacion' }
+    delete:
+      tags: [Instituciones]
+      summary: Eliminar una institución y sus asociaciones
+      responses:
+        '200': { $ref: '#/components/responses/Mensaje' }
+        '404': { $ref: '#/components/responses/Error' }
+  /instituciones/{id}/usuarios:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [Instituciones]
+      summary: Asociar docentes/capacitadores sin quitar asociaciones existentes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [usuarios]
+              properties:
+                usuarios:
+                  type: array
+                  minItems: 1
+                  uniqueItems: true
+                  items: { type: integer }
+      responses:
+        '200': { $ref: '#/components/responses/Objeto' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Validacion' }
+    put:
+      tags: [Instituciones]
+      summary: Reemplazar la lista de docentes/capacitadores asociados
+      description: Una lista vacía quita todas las asociaciones.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [usuarios]
+              properties:
+                usuarios:
+                  type: array
+                  uniqueItems: true
+                  items: { type: integer }
+      responses:
+        '200': { $ref: '#/components/responses/Objeto' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Validacion' }
+  /instituciones/{id}/usuarios/{usuarioId}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - in: path
+        name: usuarioId
+        required: true
+        schema: { type: integer }
+    delete:
+      tags: [Instituciones]
+      summary: Desvincular un usuario de una institución
+      responses:
+        '200': { $ref: '#/components/responses/Mensaje' }
+        '404': { $ref: '#/components/responses/Error' }
   /roles:
     get:
       tags: [Usuarios y roles]
@@ -951,7 +1071,7 @@ paths:
   /seguimiento/docentes:
     get:
       tags: [Seguimiento e informes]
-      summary: Listar docentes y su progreso consolidado (administrador, capacitador o sistemas)
+      summary: Listar docentes y su progreso consolidado
       parameters:
         - in: query
           name: buscar
@@ -1098,7 +1218,7 @@ paths:
   /reportes/tecnicos:
     get:
       tags: [Seguimiento e informes]
-      summary: Consultar métricas técnicas agregadas por ruta, método y código de estado (sistemas)
+      summary: Consultar métricas técnicas agregadas (solo sistemas)
       parameters:
         - in: query
           name: tipo
@@ -1255,6 +1375,29 @@ components:
         id: { type: integer }
         rol_name: { type: string }
         description: { type: string, nullable: true }
+    InstitucionEntrada:
+      type: object
+      properties:
+        nombre: { type: string, maxLength: 150 }
+        codigo_dane: { type: string, nullable: true, maxLength: 20 }
+        direccion: { type: string, nullable: true, maxLength: 255 }
+        telefono: { type: string, nullable: true, maxLength: 30 }
+        email: { type: string, nullable: true, format: email }
+        activo: { type: boolean }
+    InstitucionCrear:
+      allOf:
+        - $ref: '#/components/schemas/InstitucionEntrada'
+        - type: object
+          required: [nombre]
+    Institucion:
+      allOf:
+        - $ref: '#/components/schemas/InstitucionEntrada'
+        - type: object
+          properties:
+            id: { type: integer }
+            usuarios:
+              type: array
+              items: { $ref: '#/components/schemas/Usuario' }
     ModuloEntrada:
       type: object
       required: [nombre]
