@@ -109,6 +109,28 @@ const menus: Record<Role, { label: string; icon: IconName; page: string }[]> = {
   ],
 };
 
+const roleNameAliases: Record<Role, string[]> = {
+  admin: ["administrador", "superadministrador"],
+  trainer: ["capacitador"],
+  teacher: ["docente"],
+  technical: ["sistemas"],
+};
+
+const permissionRouteAliases: Record<string, string> = {
+  "users.index": "users",
+  "roles.index": "roles",
+  "permissions.index": "permissions",
+  "modules.index": "modules",
+  "diagnosticos.index": "diagnostic-admin",
+  "seguimiento.docentes": "tracking",
+  "plazos-modulos.index": "deadlines",
+  "reportes.conectividad": "connectivity-admin",
+};
+
+const frontendPages = Array.from(
+  new Map(Object.values(menus).flat().map((item) => [item.page, item])).values(),
+);
+
 const users = [
   {
     id: "USR-001",
@@ -634,14 +656,117 @@ function AppShell({ role, user, onLogout, onUserUpdated }: { role: Role; user?: 
   const [institutionsLoading, setInstitutionsLoading] = useState(false);
   const [selectedUserRole, setSelectedUserRole] = useState("");
   const [modalError, setModalError] = useState("");
+  const [allowedPages, setAllowedPages] = useState<Set<string>>(
+    () => new Set(apiConfigured ? [] : menus[role].map((item) => item.page)),
+  );
+  const [pageLabels, setPageLabels] = useState<Record<string, string>>({});
+  const [permissionsLoading, setPermissionsLoading] = useState(apiConfigured);
+  const [permissionsError, setPermissionsError] = useState("");
+  const [permissionsRefreshVersion, setPermissionsRefreshVersion] = useState(0);
+  const [navigationError, setNavigationError] = useState("");
   const info = roleInfo[role];
   const displayName = user?.name || [user?.first_name, user?.last_name].filter(Boolean).join(" ") || info.name;
   const displayInitials = displayName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+  const visibleMenu = apiConfigured
+    ? frontendPages
+        .filter((item) => allowedPages.has(item.page))
+        .map((item) => ({ ...item, label: pageLabels[item.page] || item.label }))
+    : menus[role].filter((item) => allowedPages.has(item.page));
+  useEffect(() => {
+    const refresh = () => setPermissionsRefreshVersion((version) => version + 1);
+    window.addEventListener("educonecta:permissions-changed", refresh);
+    return () => window.removeEventListener("educonecta:permissions-changed", refresh);
+  }, []);
+  useEffect(() => {
+    if (!apiConfigured) return;
+    let cancelled = false;
+    setPermissionsLoading(true);
+    setPermissionsError("");
+    setAllowedPages(new Set());
+    setPageLabels({});
+    const loadPermissions = async () => {
+      const catalog = await api.permissionCatalog();
+      const viewPermissionId = catalog.permisos.find(
+        (permission) => permission.permission.toLocaleLowerCase("es") === "view",
+      )?.id;
+      if (viewPermissionId === undefined) {
+        throw new Error("El catálogo no contiene el permiso de lectura (view).");
+      }
+
+      const assignedRoles = user?.roles || [];
+      const roleIds = assignedRoles
+        .map((assignedRole) => assignedRole.id)
+        .filter((id): id is number => typeof id === "number");
+      if (roleIds.length < assignedRoles.length || assignedRoles.length === 0) {
+        const { roles } = await api.roles();
+        const assignedNames = assignedRoles.length
+          ? assignedRoles.map((assignedRole) => assignedRole.rol_name.toLocaleLowerCase("es"))
+          : roleNameAliases[role];
+        roleIds.push(...roles
+          .filter((apiRole) => assignedNames.includes(apiRole.rol_name.toLocaleLowerCase("es")))
+          .map((apiRole) => apiRole.id));
+      }
+
+      const uniqueRoleIds = Array.from(new Set(roleIds));
+      if (uniqueRoleIds.length === 0) {
+        throw new Error("No fue posible determinar los roles asignados al usuario.");
+      }
+      const roleDetails = await Promise.all(uniqueRoleIds.map((id) => api.role(id)));
+      const permittedPageIds = new Set(
+        roleDetails.flatMap(({ rol }) =>
+          (rol.pages_by_role || [])
+            .filter((assignment) => assignment.id_permission === viewPermissionId)
+            .map((assignment) => assignment.id_page),
+        ),
+      );
+      const supportedPages = new Set(frontendPages.map((item) => item.page));
+      const pageEntries = catalog.paginas
+          .filter((page) => permittedPageIds.has(page.id) && page.route)
+          .flatMap((page) => page.route
+            ? [{
+                route: permissionRouteAliases[page.route] || page.route,
+                label: page.page_name,
+              }]
+            : [])
+          .filter((page) => supportedPages.has(page.route));
+      const routes = new Set(pageEntries.map((page) => page.route));
+      if (routes.size === 0) {
+        throw new Error("Los roles asignados no tienen permiso de lectura en ninguna página.");
+      }
+      if (!cancelled) {
+        setAllowedPages(routes);
+        setPageLabels(Object.fromEntries(pageEntries.map((page) => [page.route, page.label])));
+      }
+    };
+
+    loadPermissions()
+      .catch((cause) => {
+        if (!cancelled) {
+          setAllowedPages(new Set());
+          setPageLabels({});
+          setPermissionsError(cause instanceof Error ? cause.message : "No fue posible cargar los permisos de páginas.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPermissionsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [role, user, permissionsRefreshVersion]);
+  useEffect(() => {
+    if (!apiConfigured || permissionsLoading || permissionsError || allowedPages.has(page)) return;
+    const firstAllowedPage = menus[role].find((item) => allowedPages.has(item.page));
+    if (firstAllowedPage) setPage(firstAllowedPage.page);
+  }, [allowedPages, page, permissionsError, permissionsLoading, role]);
   const selectedRoleName = apiConfigured
     ? roleOptions.find((option) => String(option.id) === selectedUserRole)?.rol_name || ""
     : selectedUserRole;
   const needsInstitutionalAssignment = /docente|capacitador/i.test(selectedRoleName);
   const navigate = (p: string) => {
+    if (apiConfigured && !allowedPages.has(p)) {
+      setNavigationError("No tienes permiso para acceder a esa página.");
+      return;
+    }
+    setNavigationError("");
     setPage(p);
     setMobile(false);
   };
@@ -669,7 +794,13 @@ function AppShell({ role, user, onLogout, onUserUpdated }: { role: Role; user?: 
       .catch((cause) => setModalError(cause instanceof Error ? cause.message : "No fue posible cargar los roles."));
   }, [page]);
   let content: React.ReactNode;
-  if (page === "dashboard")
+  if (apiConfigured && permissionsLoading)
+    content = <div className="form-message" role="status">Cargando permisos de páginas...</div>;
+  else if (apiConfigured && permissionsError)
+    content = <div className="form-message" role="alert">{permissionsError}</div>;
+  else if (apiConfigured && !allowedPages.has(page))
+    content = <div className="form-message" role="alert">No tienes permiso para acceder a las páginas disponibles.</div>;
+  else if (page === "dashboard")
     content =
       role === "teacher" ? (
         <TeacherDashboard navigate={navigate} user={user} />
@@ -725,7 +856,7 @@ function AppShell({ role, user, onLogout, onUserUpdated }: { role: Role; user?: 
         </div>
         <div className="role-label">ESPACIO {info.label.toUpperCase()}</div>
         <nav>
-          {menus[role].map((item) => (
+          {visibleMenu.map((item) => (
             <button
               key={item.page}
               className={page === item.page ? "active" : ""}
@@ -757,7 +888,7 @@ function AppShell({ role, user, onLogout, onUserUpdated }: { role: Role; user?: 
           </button>
           <div className="breadcrumb">
             EDUConecta <Icon name="arrow" size={13} />
-            <b>{menus[role].find((x) => x.page === page)?.label || "Vista"}</b>
+            <b>{visibleMenu.find((x) => x.page === page)?.label || "Vista"}</b>
           </div>
           <div className="top-actions">
             <button
@@ -777,7 +908,10 @@ function AppShell({ role, user, onLogout, onUserUpdated }: { role: Role; user?: 
             </div>
           </div>
         </header>
-        <main className="content">{content}</main>
+        <main className="content">
+          {navigationError && <div className="form-message" role="alert">{navigationError}</div>}
+          {content}
+        </main>
       </div>
       {modal && (
         <div className="modal-backdrop">

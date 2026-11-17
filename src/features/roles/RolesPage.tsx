@@ -64,6 +64,7 @@ function ApiRolesPage() {
         return { pagina_id, permiso_id };
       });
       const response = await api.updateRolePermissions(selectedRoleId, permisos);
+      window.dispatchEvent(new Event("educonecta:permissions-changed"));
       setSuccess(response.mensaje || "Permisos guardados correctamente.");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible guardar los permisos."); }
     finally { setSaving(false); }

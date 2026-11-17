@@ -14,6 +14,13 @@ export type ApiUser = {
 };
 
 export type ApiRole = { id: number; rol_name: string; description?: string | null };
+export type ApiRoleDetail = ApiRole & {
+  pages_by_role?: Array<{ id_page: number; id_permission: number }>;
+};
+export type ApiPermissionCatalog = {
+  paginas: Array<{ id: number; page_name: string; route?: string | null }>;
+  permisos: Array<{ id: number; permission: string }>;
+};
 export type ApiInstitution = {
   id: number;
   nombre: string;
@@ -222,14 +229,14 @@ export const api = {
     request(`/usuarios/${id}/estado`, json("PATCH", { activo })),
   deleteUser: (id: number) => request(`/usuarios/${id}`, json("DELETE")),
   roles: () => request<{ roles: ApiRole[] }>("/roles"),
-  role: (id: number) => request(`/roles/${id}`),
+  role: (id: number) => request<{ rol: ApiRoleDetail }>(`/roles/${id}`),
   createRole: (data: { rol_name: string; description?: string }) =>
     request("/roles", json("POST", data)),
   updateRole: (id: number, data: Partial<ApiRole>) => request(`/roles/${id}`, json("PUT", data)),
   deleteRole: (id: number) => request(`/roles/${id}`, json("DELETE")),
   updateRolePermissions: (id: number, permisos: Array<{ pagina_id: number; permiso_id: number }>) =>
     request<{ mensaje?: string }>(`/roles/${id}/permisos`, json("PUT", { permisos })),
-  permissionCatalog: () => request("/catalogos/permisos"),
+  permissionCatalog: () => request<ApiPermissionCatalog>("/catalogos/permisos"),
   levels: () => request("/niveles-competencia"),
   competencies: () => request("/competencias"),
   modules: (nivelId?: number) =>
