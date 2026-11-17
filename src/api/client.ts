@@ -14,6 +14,24 @@ export type ApiUser = {
 };
 
 export type ApiRole = { id: number; rol_name: string; description?: string | null };
+export type ApiInstitution = {
+  id: number;
+  nombre: string;
+  codigo_dane?: string | null;
+  direccion?: string | null;
+  telefono?: string | null;
+  email?: string | null;
+  activo?: boolean;
+  usuarios?: ApiUser[];
+};
+export type ApiInstitutionInput = {
+  nombre: string;
+  codigo_dane?: string | null;
+  direccion?: string | null;
+  telefono?: string | null;
+  email?: string | null;
+  activo?: boolean;
+};
 export type ApiModule = {
   id: number;
   nombre: string;
@@ -160,6 +178,36 @@ export const api = {
       `/usuarios${query.size ? `?${query}` : ""}`,
     );
   },
+  institutions: (params: { activo?: boolean; por_pagina?: number; page?: number } = {}) => {
+    const query = new URLSearchParams(
+      Object.entries(params).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]),
+    );
+    return request<{ data: ApiInstitution[]; total?: number; current_page?: number; last_page?: number }>(
+      `/instituciones${query.size ? `?${query}` : ""}`,
+    );
+  },
+  institution: (id: number) =>
+    request<{ institucion: ApiInstitution }>(`/instituciones/${id}`),
+  createInstitution: (data: ApiInstitutionInput) =>
+    request<{ institucion?: ApiInstitution; mensaje?: string }>("/instituciones", json("POST", data)),
+  updateInstitution: (id: number, data: Partial<ApiInstitutionInput>) =>
+    request<{ institucion?: ApiInstitution; mensaje?: string }>(`/instituciones/${id}`, json("PUT", data)),
+  patchInstitution: (id: number, data: Partial<ApiInstitutionInput>) =>
+    request<{ institucion?: ApiInstitution; mensaje?: string }>(`/instituciones/${id}`, json("PATCH", data)),
+  deleteInstitution: (id: number) =>
+    request<{ mensaje?: string }>(`/instituciones/${id}`, json("DELETE")),
+  addInstitutionUsers: (id: number, usuarios: number[]) =>
+    request<{ mensaje?: string; institucion?: ApiInstitution }>(
+      `/instituciones/${id}/usuarios`,
+      json("POST", { usuarios }),
+    ),
+  replaceInstitutionUsers: (id: number, usuarios: number[]) =>
+    request<{ mensaje?: string; institucion?: ApiInstitution }>(
+      `/instituciones/${id}/usuarios`,
+      json("PUT", { usuarios }),
+    ),
+  removeInstitutionUser: (id: number, userId: number) =>
+    request<{ mensaje?: string }>(`/instituciones/${id}/usuarios/${userId}`, json("DELETE")),
   createUser: (data: {
     first_name: string;
     last_name: string;
